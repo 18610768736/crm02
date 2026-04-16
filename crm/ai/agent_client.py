@@ -4,6 +4,7 @@ import json
 import os
 import uuid
 from urllib import error, request
+from urllib.parse import urlparse, urlunparse
 
 from crm.ai.schemas import PanelContext
 
@@ -43,6 +44,102 @@ def _is_retryable_error(exc: Exception) -> bool:
 	return any(keyword in message for keyword in ("timeout", "temporarily", "rate limit", "retry"))
 
 
+def _as_bool(value: str | None, default: bool = False) -> bool:
+	if value is None:
+		return default
+	return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _runtime_required() -> bool:
+	return _as_bool(os.getenv("OPENCLAW_RUNTIME_REQUIRED"))
+
+
+def _allow_simulation_fallback() -> bool:
+	return _as_bool(os.getenv("OPENCLAW_RUNTIME_ALLOW_SIMULATION_FALLBACK"), default=True)
+
+
+def _runtime_health_url(runtime_url: str | None) -> str | None:
+	explicit_health_url = os.getenv("OPENCLAW_RUNTIME_HEALTH_URL")
+	if explicit_health_url:
+		return explicit_health_url
+	if not runtime_url:
+		return None
+	parsed = urlparse(runtime_url)
+	health_path = "/health"
+	if parsed.path and parsed.path.endswith("/health"):
+		health_path = parsed.path
+	return urlunparse((parsed.scheme, parsed.netloc, health_path, "", "", ""))
+
+
+def _build_runtime_headers() -> dict[str, str]:
+	headers = {"Content-Type": "application/json"}
+	runtime_token = os.getenv("OPENCLAW_RUNTIME_TOKEN")
+	if runtime_token:
+		headers["Authorization"] = f"Bearer {runtime_token}"
+	return headers
+
+
+def check_runtime_health(runtime_url: str | None = None) -> dict[str, object]:
+	target_runtime_url = runtime_url or os.getenv("OPENCLAW_RUNTIME_URL")
+	required = _runtime_required()
+	health_url = _runtime_health_url(target_runtime_url)
+	result: dict[str, object] = {
+		"required": required,
+		"runtime_url": target_runtime_url,
+		"health_url": health_url,
+		"configured": bool(target_runtime_url),
+		"healthy": False,
+	}
+
+	if not target_runtime_url:
+		result["reason"] = "missing_runtime_url"
+		result["mode"] = "required" if required else "simulation"
+		return result
+
+	if not health_url:
+		result["reason"] = "missing_health_url"
+		return result
+
+	req = request.Request(health_url, headers=_build_runtime_headers(), method="GET")
+	try:
+		with request.urlopen(req, timeout=5) as response:  # noqa: S310 - runtime URL is env-configured
+			status_code = getattr(response, "status", None) or response.getcode()
+			body = response.read().decode("utf-8")
+	except error.HTTPError as exc:  # pragma: no cover - network path tested in integration
+		result["reason"] = "http_error"
+		result["error"] = f"runtime health http error {exc.code}"
+		return result
+	except error.URLError as exc:  # pragma: no cover - network path tested in integration
+		result["reason"] = "unreachable"
+		result["error"] = f"runtime health unreachable: {exc.reason}"
+		return result
+
+	payload: dict[str, object]
+	try:
+		payload = json.loads(body) if body else {}
+	except json.JSONDecodeError:
+		payload = {"raw": body}
+
+	explicit_healthy = payload.get("healthy")
+	status_text = str(payload.get("status") or "").lower()
+	is_healthy = bool(explicit_healthy) if explicit_healthy is not None else status_text in {
+		"",
+		"ok",
+		"ready",
+		"healthy",
+	}
+	result.update(
+		{
+			"healthy": bool(status_code and 200 <= int(status_code) < 300 and is_healthy),
+			"status_code": status_code,
+			"payload": payload,
+			"reason": "ok" if bool(status_code and 200 <= int(status_code) < 300 and is_healthy) else "unhealthy",
+			"mode": "openclaw_http",
+		}
+	)
+	return result
+
+
 def _simulate_runtime_response(agent_request: dict[str, object]) -> dict[str, object]:
 	prompt = str(agent_request.get("prompt") or "")
 	if "[force_retryable_error]" in prompt:
@@ -66,10 +163,7 @@ def _execute_via_openclaw_runtime(
 	agent_request: dict[str, object],
 ) -> dict[str, object]:
 	payload = json.dumps(agent_request).encode("utf-8")
-	headers = {"Content-Type": "application/json"}
-	runtime_token = os.getenv("OPENCLAW_RUNTIME_TOKEN")
-	if runtime_token:
-		headers["Authorization"] = f"Bearer {runtime_token}"
+	headers = _build_runtime_headers()
 
 	req = request.Request(runtime_url, data=payload, headers=headers, method="POST")
 	try:
@@ -99,6 +193,20 @@ def execute_agent_request(
 	max_retries: int = 2,
 ) -> dict[str, object]:
 	runtime_url = os.getenv("OPENCLAW_RUNTIME_URL")
+	required = _runtime_required()
+	if required and not runtime_url:
+		return {
+			"status": "failed",
+			"attempts": 0,
+			"max_retries": max_retries,
+			"mode": "required_runtime_missing",
+			"error": {
+				"type": "RuntimeConfigurationError",
+				"message": "OPENCLAW_RUNTIME_REQUIRED is enabled but OPENCLAW_RUNTIME_URL is not set.",
+				"retryable": False,
+			},
+		}
+
 	attempts = 0
 	last_error: str | None = None
 
@@ -119,6 +227,16 @@ def execute_agent_request(
 		except Exception as exc:  # pragma: no cover - error path is deterministic in tests
 			last_error = str(exc)
 			if not _is_retryable_error(exc) or attempts > max_retries:
+				if runtime_url and not required and _allow_simulation_fallback():
+					response = _simulate_runtime_response(agent_request)
+					return {
+						"status": "succeeded",
+						"attempts": attempts,
+						"max_retries": max_retries,
+						"mode": "simulation_fallback",
+						"response": response,
+						"fallback_reason": last_error,
+					}
 				return {
 					"status": "failed",
 					"attempts": attempts,
