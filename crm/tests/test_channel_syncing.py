@@ -15,6 +15,7 @@ from crm.api.channel_sync import (
 	list_sync_cursors,
 	list_touchpoints,
 )
+from crm.channel_syncing.connectors import normalize_connector_payload
 from crm.channel_syncing.background_sync import sync_all_channels
 from crm.channel_syncing.normalizer import normalize_event
 
@@ -45,6 +46,46 @@ class TestChannelSyncing(UnitTestCase):
 		self.assertEqual(result["contact_hints"]["external_user_ids"], ["ext-001"])
 		self.assertEqual(result["participants"][0]["label"], "张三")
 
+	def test_connector_normalizers_map_channel_specific_payloads(self):
+		qywx_payload = normalize_connector_payload(
+			"qywx",
+			{
+				"msgid": "qywx-msg-001",
+				"chat_id": "qywx-chat-001",
+				"content": "客户咨询定价",
+				"external_userid": "qywx-user-001",
+			},
+		)
+		self.assertEqual(qywx_payload["event_id"], "qywx-msg-001")
+		self.assertEqual(qywx_payload["conversation_id"], "qywx-chat-001")
+		self.assertEqual(qywx_payload["external_user_id"], "qywx-user-001")
+
+		lark_payload = normalize_connector_payload(
+			"lark",
+			{
+				"message_id": "lark-msg-001",
+				"chat_id": "lark-chat-001",
+				"content": "会议纪要",
+				"open_id": "lark-open-001",
+			},
+		)
+		self.assertEqual(lark_payload["event_id"], "lark-msg-001")
+		self.assertEqual(lark_payload["conversation_id"], "lark-chat-001")
+		self.assertEqual(lark_payload["external_user_id"], "lark-open-001")
+
+		email_payload = normalize_connector_payload(
+			"email",
+			{
+				"message_id": "mail-msg-001",
+				"thread_id": "mail-thread-001",
+				"subject": "报价咨询",
+				"from_email": "buyer@example.com",
+			},
+		)
+		self.assertEqual(email_payload["event_id"], "mail-msg-001")
+		self.assertEqual(email_payload["conversation_id"], "mail-thread-001")
+		self.assertEqual(email_payload["email"], "buyer@example.com")
+
 	def test_ingest_event_returns_normalized_payload_and_stub_job(self):
 		payload = {
 			"event_id": "evt-002",
@@ -63,6 +104,25 @@ class TestChannelSyncing(UnitTestCase):
 		self.assertTrue(result["cursor_id"])
 		self.assertTrue(result["audit_id"])
 		self.assertGreaterEqual(len(result["evidence_ids"]), 1)
+
+	def test_ingest_event_uses_connector_normalization(self):
+		result = ingest_event(
+			"qywx",
+			{
+				"msgid": "qywx-msg-ingest-001",
+				"chat_id": "qywx-chat-ingest-001",
+				"content": "请发送方案",
+				"external_userid": "qywx-ext-ingest-001",
+				"external_name": "客户连接器",
+			},
+		)
+
+		self.assertEqual(result["normalized_event"]["external_id"], "qywx-msg-ingest-001")
+		self.assertEqual(result["normalized_event"]["thread_key"], "qywx-chat-ingest-001")
+		self.assertEqual(
+			result["normalized_event"]["contact_hints"]["external_user_ids"],
+			["qywx-ext-ingest-001"],
+		)
 
 	def test_ingest_event_persists_touchpoints_and_external_identities(self):
 		payload = {
@@ -171,6 +231,35 @@ class TestChannelSyncing(UnitTestCase):
 		cursor_list = list_sync_cursors(channel="qywx", workspace_id=result["workspace_id"])
 		self.assertGreaterEqual(cursor_list["total_count"], 1)
 		self.assertTrue(any(item["name"] == result["cursor_id"] for item in cursor_list["items"]))
+
+	def test_identity_matching_reuses_external_identity_reference(self):
+		seed = ingest_event(
+			"qywx",
+			{
+				"event_id": "evt-identity-seed-001",
+				"conversation_id": "conv-identity-seed-001",
+				"text": "客户首次咨询",
+				"external_user_id": "qywx-ext-identity-001",
+				"customer_name": "客户A",
+				"reference_doctype": "CRM Lead",
+				"reference_name": "LEAD-IDENTITY-001",
+			},
+		)
+		self.assertTrue(seed["identity_id"])
+
+		followup = ingest_event(
+			"qywx",
+			{
+				"event_id": "evt-identity-followup-001",
+				"conversation_id": "conv-identity-followup-001",
+				"text": "客户继续跟进",
+				"external_user_id": "qywx-ext-identity-001",
+				"customer_name": "客户A",
+			},
+		)
+		self.assertEqual(followup["match"]["strategy"], "external_identity_lookup")
+		self.assertEqual(followup["match"]["reference"]["doctype"], "CRM Lead")
+		self.assertEqual(followup["match"]["reference"]["name"], "LEAD-IDENTITY-001")
 
 	def test_sync_all_channels_returns_supported_channel_statuses(self):
 		result = sync_all_channels()

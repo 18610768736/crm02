@@ -4,6 +4,7 @@ import frappe
 
 from crm.ai.governance_repository import persist_audit_log, persist_evidence_links
 from crm.ai.audit import build_audit_record
+from crm.channel_syncing.connectors import normalize_connector_payload
 from crm.channel_syncing.evidence import build_sync_evidence
 from crm.channel_syncing.evidence import build_sync_evidence_links
 from crm.channel_syncing.matcher import match_event_to_reference
@@ -47,7 +48,8 @@ def _coerce_limit(value: int | str | None, default: int = 20) -> int:
 @frappe.whitelist()
 def ingest_event(channel: str, payload: dict | str | None = None) -> dict:
 	source_payload = _coerce_payload(payload)
-	normalized_event = normalize_event(channel, source_payload)
+	connector_payload = normalize_connector_payload(channel, source_payload)
+	normalized_event = normalize_event(channel, connector_payload)
 	workspace = persist_channel_workspace(normalized_event)
 	cursor = normalized_event.get("cursor") or {}
 	cursor_key = cursor.get("key") or f"{channel}::{workspace['workspace_key']}"

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from crm.channel_syncing.repository import match_reference_from_external_identity
+
 
 def match_event_to_reference(normalized_event: dict[str, Any]) -> dict[str, Any]:
 	source_payload = normalized_event.get("source_payload", {})
@@ -17,6 +19,22 @@ def match_event_to_reference(normalized_event: dict[str, Any]) -> dict[str, Any]
 				"thread_key": normalized_event.get("thread_key"),
 				"thread_confidence": 1.0,
 				"thread_strategy": "explicit_reference_hint",
+			},
+		}
+
+	identity_match = match_reference_from_external_identity(normalized_event)
+	if identity_match:
+		reference = identity_match["reference"]
+		confidence = identity_match["confidence"]
+		return {
+			"matched": True,
+			"confidence": confidence,
+			"reference": reference,
+			"strategy": identity_match["strategy"],
+			"thread_match": {
+				"thread_key": normalized_event.get("thread_key"),
+				"thread_confidence": confidence,
+				"thread_strategy": identity_match["strategy"],
 			},
 		}
 

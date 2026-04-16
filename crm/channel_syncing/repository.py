@@ -434,7 +434,7 @@ def persist_conversation_thread(
 	payload = {
 		"channel": normalized_event["channel"],
 		"thread_key": thread_key,
-		"status": "Active",
+		"status": _resolve_thread_status(normalized_event),
 		"last_touchpoint_at": normalized_event.get("occurred_at"),
 		"touchpoint_count": 1,
 		"reference_doctype": reference.get("doctype"),
@@ -457,7 +457,13 @@ def persist_conversation_thread(
 		if name:
 			doc = frappe.get_doc(CONVERSATION_THREAD_DOCTYPE, name)
 			current_count = int(doc.get("touchpoint_count") or 0)
-			doc.update({**payload, "touchpoint_count": current_count + 1})
+			doc.update(
+				{
+					**payload,
+					"status": _resolve_thread_status(normalized_event, current_status=doc.get("status")),
+					"touchpoint_count": current_count + 1,
+				}
+			)
 			if not payload["last_touchpoint_at"]:
 				doc.last_touchpoint_at = doc.get("last_touchpoint_at")
 			doc.save(ignore_permissions=True)
@@ -476,6 +482,10 @@ def persist_conversation_thread(
 	)
 	if existing:
 		payload["touchpoint_count"] = int(existing.get("touchpoint_count") or 0) + 1
+		payload["status"] = _resolve_thread_status(
+			normalized_event,
+			current_status=existing.get("status"),
+		)
 		if not payload["last_touchpoint_at"]:
 			payload["last_touchpoint_at"] = existing.get("last_touchpoint_at")
 		volatile_payload = {"name": existing["name"], **payload}
@@ -542,7 +552,8 @@ def persist_external_identity(
 	normalized_event: dict[str, Any],
 	match_result: dict[str, Any],
 ) -> dict[str, Any] | None:
-	external_id = _extract_external_identity(normalized_event)
+	identity_candidates = _extract_identity_candidates(normalized_event)
+	external_id = identity_candidates[0] if identity_candidates else None
 	if not external_id:
 		return None
 
@@ -582,6 +593,50 @@ def persist_external_identity(
 		{"name": _generate_name("EXT-ID"), **payload},
 	)
 	return _to_external_identity_detail(record)
+
+
+def match_reference_from_external_identity(
+	normalized_event: dict[str, Any],
+) -> dict[str, Any] | None:
+	channel = normalized_event.get("channel")
+	if not channel:
+		return None
+
+	identity_candidates = _extract_identity_candidates(normalized_event)
+	if not identity_candidates:
+		return None
+	identity_keys = [f"{channel}::{candidate}" for candidate in identity_candidates]
+
+	volatile_match = _match_reference_in_volatile_identities(identity_keys)
+	if volatile_match:
+		return volatile_match
+
+	if not _doc_type_available(EXTERNAL_IDENTITY_DOCTYPE):
+		return None
+
+	record = frappe.get_all(
+		EXTERNAL_IDENTITY_DOCTYPE,
+		filters={
+			"identity_key": ["in", identity_keys],
+			"reference_doctype": ["is", "set"],
+			"reference_name": ["is", "set"],
+		},
+		fields=["identity_key", "reference_doctype", "reference_name", "confidence"],
+		order_by="confidence desc, modified desc",
+		limit=1,
+	)
+	if not record:
+		return None
+
+	item = record[0]
+	return {
+		"reference": {
+			"doctype": item.get("reference_doctype"),
+			"name": item.get("reference_name"),
+		},
+		"confidence": float(item.get("confidence") or 0.85),
+		"strategy": "external_identity_lookup",
+	}
 
 
 def persist_meeting_artifact(
@@ -817,6 +872,25 @@ def should_persist_meeting_artifact(normalized_event: dict[str, Any]) -> bool:
 	)
 
 
+def _resolve_thread_status(
+	normalized_event: dict[str, Any],
+	current_status: str | None = None,
+) -> str:
+	source_payload = normalized_event.get("source_payload", {})
+	explicit_status = source_payload.get("thread_status") or source_payload.get("status")
+	if explicit_status in {"Active", "Archived", "Closed"}:
+		return explicit_status
+
+	event_type = str(normalized_event.get("event_type") or "")
+	if event_type.endswith(".closed"):
+		return "Closed"
+	if event_type.endswith(".archived"):
+		return "Archived"
+	if source_payload.get("archived") is True:
+		return "Archived"
+	return current_status or "Active"
+
+
 def _list_records(
 	doctype: str,
 	volatile_store: dict[str, dict[str, Any]],
@@ -902,11 +976,36 @@ def _extract_customer_name(normalized_event: dict[str, Any]) -> str | None:
 
 
 def _extract_external_identity(normalized_event: dict[str, Any]) -> str | None:
+	candidates = _extract_identity_candidates(normalized_event)
+	if not candidates:
+		return None
+	return candidates[0]
+
+
+def _extract_identity_candidates(normalized_event: dict[str, Any]) -> list[str]:
 	contact_hints = normalized_event.get("contact_hints", {})
+	candidates: list[str] = []
 	for key in ("external_user_ids", "emails", "phone_numbers", "display_names"):
-		values = contact_hints.get(key) or []
-		if values:
-			return values[0]
+		for value in contact_hints.get(key) or []:
+			text = str(value).strip()
+			if text and text not in candidates:
+				candidates.append(text)
+	return candidates
+
+
+def _match_reference_in_volatile_identities(identity_keys: list[str]) -> dict[str, Any] | None:
+	for record in _VOLATILE_EXTERNAL_IDENTITIES.values():
+		if record.get("identity_key") not in identity_keys:
+			continue
+		reference_doctype = record.get("reference_doctype")
+		reference_name = record.get("reference_name")
+		if not reference_doctype or not reference_name:
+			continue
+		return {
+			"reference": {"doctype": reference_doctype, "name": reference_name},
+			"confidence": float(record.get("confidence") or 0.85),
+			"strategy": "external_identity_lookup",
+		}
 	return None
 
 

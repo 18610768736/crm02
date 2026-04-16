@@ -115,3 +115,20 @@ class TestConversationThreading(UnitTestCase):
 
 		thread_list = list_conversation_threads("CRM Deal", "DEAL-THREAD-REF-001")
 		self.assertGreaterEqual(thread_list["total_count"], 1)
+
+	def test_thread_status_updates_when_closed_event_arrives(self):
+		first = self._ingest(
+			"evt-thread-status-001",
+			"conv-thread-status-001",
+			reference_name="LEAD-THREAD-STATUS-001",
+		)
+		closed = self._ingest(
+			"evt-thread-status-002",
+			"conv-thread-status-001",
+			reference_name="LEAD-THREAD-STATUS-001",
+			extra_payload={"event_type": "conversation.closed"},
+		)
+
+		self.assertEqual(first["thread_id"], closed["thread_id"])
+		thread = get_conversation_thread_detail(closed["thread_id"])
+		self.assertEqual(thread["status"], "Closed")
