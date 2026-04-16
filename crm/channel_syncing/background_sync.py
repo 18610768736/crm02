@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from crm.channel_syncing.repository import upsert_sync_cursor
+from typing import Any
+
+from crm.channel_syncing.alerts import emit_sync_alert
+from crm.channel_syncing.connectors import pull_connector_events
+from crm.channel_syncing.repository import (
+	get_channel_credential,
+	list_channel_credentials,
+	upsert_channel_credential,
+	upsert_sync_cursor,
+)
 
 SUPPORTED_CHANNELS = ("qywx", "lark", "email")
 
@@ -9,59 +18,228 @@ def get_supported_channels() -> list[str]:
 	return list(SUPPORTED_CHANNELS)
 
 
-def sync_channel(
+def _ingest_pulled_event(channel: str, payload: dict[str, Any]) -> dict[str, Any]:
+	from crm.api.channel_sync import ingest_event
+
+	return ingest_event(channel, payload, verify_signature=0)
+
+
+def _sync_single_credential(
 	channel: str,
+	credential: dict[str, Any],
 	cursor_key: str | None = None,
 	cursor_value: str | None = None,
+	limit: int = 20,
 	max_retries: int = 1,
-) -> dict[str, str | int | None]:
-	target_cursor_key = cursor_key or f"{channel}::default"
-	target_cursor_value = cursor_value or "idle"
+) -> dict[str, Any]:
+	credential_id = credential["name"]
+	credential_key = credential.get("credential_key") or credential_id
+	metadata = credential.get("metadata") or {}
+	target_cursor_key = cursor_key or f"{channel}::{credential_key}"
+	target_cursor_value = str(cursor_value or metadata.get("last_cursor_value") or 0)
 	attempt = 0
 	last_error: str | None = None
 
-	while attempt < max_retries:
+	while attempt <= max_retries:
 		attempt += 1
 		try:
+			pull_result = pull_connector_events(
+				channel=channel,
+				credential=credential,
+				cursor={"cursor_key": target_cursor_key, "cursor_value": target_cursor_value},
+				limit=limit,
+			)
+			events = pull_result.get("events") or []
+			processed_event_ids: list[str] = []
+			for event in events:
+				event_payload = dict(event)
+				event_payload.setdefault("workspace_key", metadata.get("workspace_key") or f"{channel}::{credential_key}")
+				event_payload.setdefault("workspace_name", metadata.get("workspace_name"))
+				event_payload.setdefault("tenant_id", metadata.get("tenant_id"))
+				event_payload.setdefault("account_id", metadata.get("account_id"))
+				event_payload.setdefault("cursor_key", pull_result.get("cursor_key") or target_cursor_key)
+				event_payload.setdefault("cursor_value", target_cursor_value)
+				ingest_result = _ingest_pulled_event(channel, event_payload)
+				processed_event_ids.append(ingest_result["normalized_event"]["external_id"])
+
+			next_cursor_value = str(pull_result.get("next_cursor_value") or target_cursor_value)
 			stored_cursor = upsert_sync_cursor(
 				channel=channel,
-				cursor_key=target_cursor_key,
-				cursor_value=target_cursor_value,
+				workspace_id=credential.get("workspace"),
+				cursor_key=pull_result.get("cursor_key") or target_cursor_key,
+				cursor_value=next_cursor_value,
 				status="Succeeded",
-				retry_count=attempt - 1,
-				metadata={"mode": "background_sync_stub"},
+				retry_count=max(attempt - 1, 0),
+				metadata={
+					"mode": "pull_sync",
+					"credential_id": credential_id,
+					"processed_event_ids": processed_event_ids,
+					"event_count": len(processed_event_ids),
+				},
+			)
+			upsert_channel_credential(
+				channel=channel,
+				workspace_id=credential.get("workspace"),
+				credential_key=credential_key,
+				auth_type=credential.get("auth_type"),
+				base_url=credential.get("base_url"),
+				access_token=credential.get("access_token"),
+				refresh_token=credential.get("refresh_token"),
+				status=credential.get("status") or "Active",
+				expires_at=credential.get("expires_at"),
+				metadata={
+					**metadata,
+					"last_cursor_key": pull_result.get("cursor_key") or target_cursor_key,
+					"last_cursor_value": next_cursor_value,
+					"last_pull_count": len(processed_event_ids),
+				},
+				last_validated_at=stored_cursor.get("last_synced_at"),
+				failure_count=0,
 			)
 			return {
 				"channel": channel,
-				"status": "idle",
+				"credential_id": credential_id,
+				"status": "succeeded",
 				"cursor_id": stored_cursor["name"],
-				"cursor_key": target_cursor_key,
-				"cursor_value": target_cursor_value,
-				"retry_count": attempt - 1,
-				"message": "Connector skeleton ready; pull sync is not wired yet.",
+				"cursor_key": pull_result.get("cursor_key") or target_cursor_key,
+				"cursor_value": next_cursor_value,
+				"retry_count": max(attempt - 1, 0),
+				"event_count": len(processed_event_ids),
+				"event_ids": processed_event_ids,
 			}
 		except Exception as exc:  # pragma: no cover - defensive fallback
 			last_error = str(exc)
-			upsert_sync_cursor(
+			final_failure = attempt > max_retries
+			stored_cursor = upsert_sync_cursor(
 				channel=channel,
+				workspace_id=credential.get("workspace"),
 				cursor_key=target_cursor_key,
 				cursor_value=target_cursor_value,
-				status="Retrying" if attempt < max_retries else "Failed",
+				status="Failed" if final_failure else "Retrying",
 				retry_count=attempt,
 				last_error=last_error,
-				metadata={"mode": "background_sync_stub"},
+				metadata={
+					"mode": "pull_sync",
+					"credential_id": credential_id,
+					"attempt": attempt,
+				},
 			)
+			upsert_channel_credential(
+				channel=channel,
+				workspace_id=credential.get("workspace"),
+				credential_key=credential_key,
+				auth_type=credential.get("auth_type"),
+				base_url=credential.get("base_url"),
+				access_token=credential.get("access_token"),
+				refresh_token=credential.get("refresh_token"),
+				status="Invalid" if final_failure else (credential.get("status") or "Active"),
+				expires_at=credential.get("expires_at"),
+				metadata={
+					**metadata,
+					"last_cursor_key": target_cursor_key,
+					"last_cursor_value": target_cursor_value,
+					"last_error": last_error,
+				},
+				failure_count=attempt,
+			)
+			if final_failure:
+				emit_sync_alert(
+					channel=channel,
+					code="pull_sync_failed",
+					severity="error",
+					message=f"Pull sync failed for credential {credential_key}: {last_error}",
+					context={
+						"credential_id": credential_id,
+						"cursor_id": stored_cursor["name"],
+						"cursor_key": target_cursor_key,
+						"attempt": attempt,
+					},
+				)
+				break
 
 	return {
 		"channel": channel,
+		"credential_id": credential_id,
 		"status": "failed",
 		"cursor_key": target_cursor_key,
 		"cursor_value": target_cursor_value,
-		"retry_count": max_retries,
-		"message": f"Background sync failed after retries: {last_error or 'unknown error'}.",
+		"retry_count": max_retries + 1,
+		"event_count": 0,
+		"message": f"Pull sync failed after retries: {last_error or 'unknown error'}",
 	}
 
 
-def sync_all_channels(channels: list[str] | None = None) -> list[dict[str, str | int | None]]:
+def sync_channel(
+	channel: str,
+	credential_id: str | None = None,
+	cursor_key: str | None = None,
+	cursor_value: str | None = None,
+	limit: int = 20,
+	max_retries: int = 1,
+) -> dict[str, Any]:
+	if channel not in SUPPORTED_CHANNELS:
+		raise ValueError(f"Unsupported channel: {channel}")
+
+	credentials: list[dict[str, Any]] = []
+	if credential_id:
+		credentials = [get_channel_credential(credential_id, include_secrets=True)]
+	else:
+		credentials = list_channel_credentials(
+			channel=channel,
+			status="Active",
+			limit=100,
+			include_secrets=True,
+		)
+
+	if not credentials:
+		return {
+			"channel": channel,
+			"status": "skipped",
+			"message": "No active channel credentials configured.",
+			"results": [],
+			"processed_events": 0,
+		}
+
+	results = [
+		_sync_single_credential(
+			channel=channel,
+			credential=credential,
+			cursor_key=cursor_key,
+			cursor_value=cursor_value,
+			limit=limit,
+			max_retries=max_retries,
+		)
+		for credential in credentials
+	]
+	success_count = len([item for item in results if item.get("status") == "succeeded"])
+	processed_events = sum(int(item.get("event_count") or 0) for item in results)
+	status = "succeeded"
+	if success_count == 0:
+		status = "failed"
+	elif success_count < len(results):
+		status = "partial"
+
+	return {
+		"channel": channel,
+		"status": status,
+		"credential_count": len(credentials),
+		"success_count": success_count,
+		"processed_events": processed_events,
+		"results": results,
+	}
+
+
+def sync_all_channels(
+	channels: list[str] | None = None,
+	limit: int = 20,
+	max_retries: int = 1,
+) -> list[dict[str, Any]]:
 	target_channels = channels or get_supported_channels()
-	return [sync_channel(channel) for channel in target_channels]
+	return [
+		sync_channel(
+			channel=channel,
+			limit=limit,
+			max_retries=max_retries,
+		)
+		for channel in target_channels
+	]

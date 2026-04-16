@@ -6,10 +6,13 @@ from crm.channel_syncing.connectors.email import get_connector_meta as get_email
 from crm.channel_syncing.connectors.email import (
 	normalize_inbound_payload as normalize_email_inbound_payload,
 )
+from crm.channel_syncing.connectors.email import pull_events as pull_email_events
 from crm.channel_syncing.connectors.lark import get_connector_meta as get_lark_connector_meta
 from crm.channel_syncing.connectors.lark import normalize_inbound_payload as normalize_lark_inbound_payload
+from crm.channel_syncing.connectors.lark import pull_events as pull_lark_events
 from crm.channel_syncing.connectors.qywx import get_connector_meta as get_qywx_connector_meta
 from crm.channel_syncing.connectors.qywx import normalize_inbound_payload as normalize_qywx_inbound_payload
+from crm.channel_syncing.connectors.qywx import pull_events as pull_qywx_events
 
 CONNECTORS = {
 	"qywx": get_qywx_connector_meta,
@@ -20,6 +23,11 @@ NORMALIZERS = {
 	"qywx": normalize_qywx_inbound_payload,
 	"lark": normalize_lark_inbound_payload,
 	"email": normalize_email_inbound_payload,
+}
+PULLERS = {
+	"qywx": pull_qywx_events,
+	"lark": pull_lark_events,
+	"email": pull_email_events,
 }
 
 
@@ -39,3 +47,15 @@ def normalize_connector_payload(channel: str, payload: dict[str, Any]) -> dict[s
 	if not normalizer:
 		return payload
 	return normalizer(payload)
+
+
+def pull_connector_events(
+	channel: str,
+	credential: dict[str, Any],
+	cursor: dict[str, Any] | None = None,
+	limit: int = 20,
+) -> dict[str, Any]:
+	puller = PULLERS.get(channel)
+	if not puller:
+		raise ValueError(f"Unsupported connector for pull sync: {channel}")
+	return puller(credential, cursor=cursor, limit=limit)

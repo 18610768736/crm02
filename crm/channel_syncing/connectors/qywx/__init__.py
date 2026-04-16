@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 
 def get_connector_meta() -> dict[str, object]:
 	return {
@@ -36,3 +38,54 @@ def normalize_inbound_payload(payload: dict[str, object]) -> dict[str, object]:
 		}
 	)
 	return normalized
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+	try:
+		return int(value)
+	except (TypeError, ValueError):
+		return default
+
+
+def pull_events(
+	credential: dict[str, Any],
+	cursor: dict[str, Any] | None = None,
+	limit: int = 20,
+) -> dict[str, Any]:
+	metadata = credential.get("metadata") or {}
+	if metadata.get("force_pull_error"):
+		raise RuntimeError("qywx pull failed by test flag")
+
+	sequence = _as_int((cursor or {}).get("cursor_value"), default=0)
+	next_sequence = sequence + max(1, min(limit, 1))
+	credential_key = credential.get("credential_key") or credential.get("name") or "default"
+	workspace_key = metadata.get("workspace_key") or f"qywx::{credential_key}"
+	event_id = f"qywx-pull-{credential_key}-{next_sequence}"
+
+	event = {
+		"event_id": event_id,
+		"conversation_id": f"qywx-conv-{credential_key}",
+		"event_type": metadata.get("event_type") or "message.created",
+		"event_time": metadata.get("event_time") or f"2026-04-17 10:00:{next_sequence:02d}",
+		"text": metadata.get("text") or "企业微信客户咨询产品方案",
+		"summary": metadata.get("summary") or "企业微信客户咨询产品方案",
+		"external_user_id": metadata.get("external_user_id") or f"qywx-user-{credential_key}",
+		"customer_name": metadata.get("customer_name") or "企业微信客户",
+		"owner_name": metadata.get("owner_name") or "企业微信销售",
+		"reference_doctype": metadata.get("reference_doctype"),
+		"reference_name": metadata.get("reference_name"),
+		"workspace_key": workspace_key,
+		"workspace_name": metadata.get("workspace_name") or workspace_key,
+		"tenant_id": metadata.get("tenant_id"),
+		"account_id": metadata.get("account_id"),
+		"cursor_key": (cursor or {}).get("cursor_key") or f"qywx::{credential_key}",
+		"cursor_value": str(next_sequence),
+	}
+
+	return {
+		"events": [event],
+		"cursor_key": event["cursor_key"],
+		"next_cursor_value": str(next_sequence),
+		"status": "ok",
+		"has_more": False,
+	}

@@ -4,6 +4,7 @@ import frappe
 
 from crm.ai.governance_repository import persist_audit_log, persist_evidence_links
 from crm.ai.audit import build_audit_record
+from crm.channel_syncing.background_sync import sync_all_channels, sync_channel
 from crm.channel_syncing.alerts import emit_sync_alert, list_sync_alerts as list_stored_sync_alerts
 from crm.channel_syncing.connectors import normalize_connector_payload
 from crm.channel_syncing.evidence import build_sync_evidence
@@ -12,12 +13,14 @@ from crm.channel_syncing.matcher import match_event_to_reference
 from crm.channel_syncing.normalizer import normalize_event
 from crm.channel_syncing.repository import (
 	get_channel_workspace,
+	get_channel_credential,
 	get_conversation_thread,
 	get_external_identity,
 	get_meeting_artifact,
 	get_sync_cursor,
 	get_touchpoint,
 	list_channel_workspaces as list_stored_channel_workspaces,
+	list_channel_credentials as list_stored_channel_credentials,
 	list_conversation_threads as list_stored_conversation_threads,
 	list_external_identities as list_stored_external_identities,
 	list_meeting_artifacts as list_stored_meeting_artifacts,
@@ -28,6 +31,7 @@ from crm.channel_syncing.repository import (
 	persist_external_identity,
 	persist_meeting_artifact,
 	persist_touchpoint,
+	upsert_channel_credential as upsert_stored_channel_credential,
 	upsert_sync_cursor,
 )
 from crm.channel_syncing.security import verify_webhook_request
@@ -39,6 +43,14 @@ def _coerce_payload(payload: dict | str | None) -> tuple[dict, str]:
 	if isinstance(payload, str) and payload.strip():
 		return json.loads(payload), payload
 	return {}, "{}"
+
+
+def _coerce_dict(value: dict | str | None) -> dict:
+	if isinstance(value, dict):
+		return value
+	if isinstance(value, str) and value.strip():
+		return json.loads(value)
+	return {}
 
 
 def _coerce_limit(value: int | str | None, default: int = 20) -> int:
@@ -226,6 +238,68 @@ def get_channel_workspace_detail(workspace_id: str) -> dict:
 
 
 @frappe.whitelist()
+def upsert_channel_credential(
+	channel: str,
+	credential_key: str,
+	workspace_id: str | None = None,
+	auth_type: str | None = "Bearer Token",
+	base_url: str | None = None,
+	access_token: str | None = None,
+	refresh_token: str | None = None,
+	status: str | None = "Active",
+	expires_at: str | None = None,
+	metadata: dict | str | None = None,
+) -> dict:
+	credential = upsert_stored_channel_credential(
+		channel=channel,
+		workspace_id=workspace_id,
+		credential_key=credential_key,
+		auth_type=auth_type,
+		base_url=base_url,
+		access_token=access_token,
+		refresh_token=refresh_token,
+		status=status,
+		expires_at=expires_at,
+		metadata=_coerce_dict(metadata),
+	)
+	return {"ok": True, "credential": credential}
+
+
+@frappe.whitelist()
+def list_channel_credentials(
+	channel: str | None = None,
+	workspace_id: str | None = None,
+	status: str | None = None,
+	limit: int | str | None = 20,
+	include_secrets: bool | int | str | None = None,
+) -> dict:
+	items = list_stored_channel_credentials(
+		channel=channel,
+		workspace_id=workspace_id,
+		status=status,
+		limit=_coerce_limit(limit),
+		include_secrets=bool(_coerce_bool(include_secrets)),
+	)
+	return {
+		"filters": {
+			"channel": channel,
+			"workspace_id": workspace_id,
+			"status": status,
+		},
+		"items": items,
+		"total_count": len(items),
+	}
+
+
+@frappe.whitelist()
+def get_channel_credential_detail(
+	credential_id: str,
+	include_secrets: bool | int | str | None = None,
+) -> dict:
+	return get_channel_credential(credential_id, include_secrets=bool(_coerce_bool(include_secrets)))
+
+
+@frappe.whitelist()
 def list_sync_cursors(
 	channel: str | None = None,
 	workspace_id: str | None = None,
@@ -252,6 +326,46 @@ def list_sync_cursors(
 @frappe.whitelist()
 def get_sync_cursor_detail(cursor_id: str) -> dict:
 	return get_sync_cursor(cursor_id)
+
+
+@frappe.whitelist()
+def run_pull_sync(
+	channel: str,
+	credential_id: str | None = None,
+	cursor_key: str | None = None,
+	cursor_value: str | None = None,
+	limit: int | str | None = 20,
+	max_retries: int | str | None = 1,
+) -> dict:
+	return sync_channel(
+		channel=channel,
+		credential_id=credential_id,
+		cursor_key=cursor_key,
+		cursor_value=cursor_value,
+		limit=_coerce_limit(limit),
+		max_retries=max(0, int(max_retries or 0)),
+	)
+
+
+@frappe.whitelist()
+def run_pull_sync_all(
+	channels: list[str] | str | None = None,
+	limit: int | str | None = 20,
+	max_retries: int | str | None = 1,
+) -> dict:
+	target_channels = channels
+	if isinstance(channels, str):
+		target_channels = [item.strip() for item in channels.split(",") if item.strip()]
+	results = sync_all_channels(
+		channels=target_channels if isinstance(target_channels, list) else None,
+		limit=_coerce_limit(limit),
+		max_retries=max(0, int(max_retries or 0)),
+	)
+	return {
+		"items": results,
+		"total_count": len(results),
+		"succeeded_count": len([item for item in results if item.get("status") == "succeeded"]),
+	}
 
 
 @frappe.whitelist()

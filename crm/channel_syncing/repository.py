@@ -16,6 +16,7 @@ MEETING_ARTIFACT_DOCTYPE = "Meeting Artifact"
 TOUCHPOINT_DOCTYPE = "Touchpoint"
 CONVERSATION_THREAD_DOCTYPE = "Conversation Thread"
 CHANNEL_WORKSPACE_DOCTYPE = "Channel Workspace"
+CHANNEL_CREDENTIAL_DOCTYPE = "Channel Credential"
 SYNC_CURSOR_DOCTYPE = "Sync Cursor"
 
 _VOLATILE_EXTERNAL_IDENTITIES: dict[str, dict[str, Any]] = {}
@@ -23,6 +24,7 @@ _VOLATILE_MEETING_ARTIFACTS: dict[str, dict[str, Any]] = {}
 _VOLATILE_TOUCHPOINTS: dict[str, dict[str, Any]] = {}
 _VOLATILE_CONVERSATION_THREADS: dict[str, dict[str, Any]] = {}
 _VOLATILE_CHANNEL_WORKSPACES: dict[str, dict[str, Any]] = {}
+_VOLATILE_CHANNEL_CREDENTIALS: dict[str, dict[str, Any]] = {}
 _VOLATILE_SYNC_CURSORS: dict[str, dict[str, Any]] = {}
 
 
@@ -188,6 +190,22 @@ def _channel_workspace_fields() -> list[str]:
 	]
 
 
+def _channel_credential_fields() -> list[str]:
+	return [
+		"name",
+		"channel",
+		"workspace",
+		"credential_key",
+		"auth_type",
+		"base_url",
+		"status",
+		"expires_at",
+		"last_validated_at",
+		"failure_count",
+		"metadata_json",
+	]
+
+
 def _sync_cursor_fields() -> list[str]:
 	return [
 		"name",
@@ -289,6 +307,40 @@ def _to_channel_workspace_detail(record: dict[str, Any]) -> dict[str, Any]:
 	}
 
 
+def _mask_secret(value: str | None) -> str | None:
+	if not value:
+		return None
+	length = len(value)
+	if length <= 4:
+		return "*" * length
+	return f"{value[:2]}{'*' * max(length - 4, 4)}{value[-2:]}"
+
+
+def _to_channel_credential_detail(
+	record: dict[str, Any],
+	include_secrets: bool = False,
+) -> dict[str, Any]:
+	access_token = record.get("access_token")
+	refresh_token = record.get("refresh_token")
+	return {
+		"name": record["name"],
+		"channel": record.get("channel"),
+		"workspace": record.get("workspace"),
+		"credential_key": record.get("credential_key"),
+		"auth_type": record.get("auth_type"),
+		"base_url": record.get("base_url"),
+		"status": record.get("status"),
+		"expires_at": record.get("expires_at"),
+		"last_validated_at": record.get("last_validated_at"),
+		"failure_count": int(record.get("failure_count") or 0),
+		"has_access_token": bool(access_token),
+		"has_refresh_token": bool(refresh_token),
+		"access_token": access_token if include_secrets else _mask_secret(access_token),
+		"refresh_token": refresh_token if include_secrets else _mask_secret(refresh_token),
+		"metadata": _json_loads(record.get("metadata_json")),
+	}
+
+
 def _to_sync_cursor_detail(record: dict[str, Any]) -> dict[str, Any]:
 	return {
 		"name": record["name"],
@@ -361,6 +413,83 @@ def persist_channel_workspace(normalized_event: dict[str, Any]) -> dict[str, Any
 		{"name": _generate_name("WS"), **payload},
 	)
 	return _to_channel_workspace_detail(record)
+
+
+def _read_doc_password(doc: Any, fieldname: str) -> str | None:
+	if not doc:
+		return None
+	try:
+		return doc.get_password(fieldname)
+	except Exception:
+		return None
+
+
+def _credential_record_from_doc(name: str) -> dict[str, Any]:
+	doc = frappe.get_doc(CHANNEL_CREDENTIAL_DOCTYPE, name)
+	record = {field: doc.get(field) for field in _channel_credential_fields()}
+	record["name"] = doc.name
+	record["access_token"] = _read_doc_password(doc, "access_token")
+	record["refresh_token"] = _read_doc_password(doc, "refresh_token")
+	return record
+
+
+def upsert_channel_credential(
+	channel: str,
+	credential_key: str,
+	workspace_id: str | None = None,
+	auth_type: str | None = "Bearer Token",
+	base_url: str | None = None,
+	access_token: str | None = None,
+	refresh_token: str | None = None,
+	status: str | None = "Active",
+	expires_at: str | None = None,
+	metadata: dict[str, Any] | None = None,
+	last_validated_at: str | None = None,
+	failure_count: int | None = 0,
+) -> dict[str, Any]:
+	filters = {"credential_key": credential_key}
+	payload = {
+		"channel": channel,
+		"workspace": workspace_id,
+		"credential_key": credential_key,
+		"auth_type": auth_type or "Bearer Token",
+		"base_url": base_url,
+		"status": status or "Active",
+		"expires_at": _coerce_datetime(expires_at),
+		"last_validated_at": _coerce_datetime(last_validated_at),
+		"failure_count": int(failure_count or 0),
+		"metadata_json": _json_dumps(metadata or {}),
+	}
+
+	if _doc_type_available(CHANNEL_CREDENTIAL_DOCTYPE):
+		name = frappe.db.exists(CHANNEL_CREDENTIAL_DOCTYPE, filters)
+		if name:
+			doc = frappe.get_doc(CHANNEL_CREDENTIAL_DOCTYPE, name)
+			doc.update(payload)
+			if access_token is not None:
+				doc.access_token = access_token
+			if refresh_token is not None:
+				doc.refresh_token = refresh_token
+			doc.save(ignore_permissions=True)
+			record = _credential_record_from_doc(doc.name)
+		else:
+			doc = frappe.get_doc({"doctype": CHANNEL_CREDENTIAL_DOCTYPE, **payload})
+			if access_token is not None:
+				doc.access_token = access_token
+			if refresh_token is not None:
+				doc.refresh_token = refresh_token
+			doc.insert(ignore_permissions=True)
+			record = _credential_record_from_doc(doc.name)
+		return _to_channel_credential_detail(record)
+
+	volatile_payload = {
+		"name": _generate_name("CRE"),
+		**payload,
+		"access_token": access_token,
+		"refresh_token": refresh_token,
+	}
+	record = _upsert_volatile(_VOLATILE_CHANNEL_CREDENTIALS, filters, volatile_payload)
+	return _to_channel_credential_detail(record)
 
 
 def upsert_sync_cursor(
@@ -825,6 +954,71 @@ def get_channel_workspace(workspace_id: str) -> dict[str, Any]:
 		_VOLATILE_CHANNEL_WORKSPACES,
 		workspace_id,
 		_to_channel_workspace_detail,
+	)
+
+
+def list_channel_credentials(
+	channel: str | None = None,
+	workspace_id: str | None = None,
+	status: str | None = None,
+	limit: int = 20,
+	include_secrets: bool = False,
+) -> list[dict[str, Any]]:
+	filters: dict[str, Any] = {}
+	if channel:
+		filters["channel"] = channel
+	if workspace_id:
+		filters["workspace"] = workspace_id
+	if status:
+		filters["status"] = status
+
+	items = []
+	for record in _VOLATILE_CHANNEL_CREDENTIALS.values():
+		if all(record.get(key) == value for key, value in filters.items()):
+			items.append(_to_channel_credential_detail(record, include_secrets=include_secrets))
+
+	if _doc_type_available(CHANNEL_CREDENTIAL_DOCTYPE):
+		records = frappe.get_all(
+			CHANNEL_CREDENTIAL_DOCTYPE,
+			filters=filters,
+			fields=["name", "credential_key"],
+			order_by="last_validated_at desc, modified desc",
+			limit=limit,
+		)
+		for record in records:
+			name = record.get("name")
+			if not name or name in _VOLATILE_CHANNEL_CREDENTIALS:
+				continue
+			items.append(
+				_to_channel_credential_detail(
+					_credential_record_from_doc(name),
+					include_secrets=include_secrets,
+				)
+			)
+
+	items.sort(key=lambda item: _sort_key(item.get("last_validated_at")), reverse=True)
+	return items[:limit]
+
+
+def get_channel_credential(
+	credential_id: str,
+	include_secrets: bool = False,
+) -> dict[str, Any]:
+	if credential_id in _VOLATILE_CHANNEL_CREDENTIALS:
+		return _to_channel_credential_detail(
+			_VOLATILE_CHANNEL_CREDENTIALS[credential_id],
+			include_secrets=include_secrets,
+		)
+
+	if _doc_type_available(CHANNEL_CREDENTIAL_DOCTYPE) and frappe.db.exists(
+		CHANNEL_CREDENTIAL_DOCTYPE, credential_id
+	):
+		record = _credential_record_from_doc(credential_id)
+		return _to_channel_credential_detail(record, include_secrets=include_secrets)
+
+	return _to_channel_credential_detail(
+		_VOLATILE_CHANNEL_CREDENTIALS[credential_id],
+		include_secrets=include_secrets,
 	)
 
 
