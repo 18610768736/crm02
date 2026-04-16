@@ -1,0 +1,1 @@
+"""AI Suggestion DocType package."""

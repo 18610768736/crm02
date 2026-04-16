@@ -1,0 +1,198 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "hash",
+ "creation": "2026-04-16 23:41:00.000000",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "channel",
+  "external_event_id",
+  "thread_key",
+  "section_break_classification",
+  "touchpoint_type",
+  "direction",
+  "occurred_at",
+  "counterparty_name",
+  "section_break_reference",
+  "reference_doctype",
+  "reference_name",
+  "conversation_thread",
+  "match_confidence",
+  "match_strategy",
+  "section_break_content",
+  "summary",
+  "content_text",
+  "section_break_payloads",
+  "signal_json",
+  "source_payload_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "channel",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Channel",
+   "reqd": 1
+  },
+  {
+   "fieldname": "external_event_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "External Event ID",
+   "unique": 1
+  },
+  {
+   "fieldname": "thread_key",
+   "fieldtype": "Data",
+   "label": "Thread Key"
+  },
+  {
+   "fieldname": "section_break_classification",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "touchpoint_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Touchpoint Type",
+   "options": "Message\nEmail\nCall\nMeeting\nNote\nApproval\nFile"
+  },
+  {
+   "fieldname": "direction",
+   "fieldtype": "Select",
+   "label": "Direction",
+   "options": "Inbound\nOutbound\nInternal"
+  },
+  {
+   "fieldname": "occurred_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Occurred At"
+  },
+  {
+   "fieldname": "counterparty_name",
+   "fieldtype": "Data",
+   "label": "Counterparty Name"
+  },
+  {
+   "fieldname": "section_break_reference",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Link",
+   "label": "Reference Doctype",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "reference_name",
+   "fieldtype": "Dynamic Link",
+   "label": "Reference Name",
+   "options": "reference_doctype"
+  },
+  {
+   "fieldname": "conversation_thread",
+   "fieldtype": "Link",
+   "label": "Conversation Thread",
+   "options": "Conversation Thread"
+  },
+  {
+   "fieldname": "match_confidence",
+   "fieldtype": "Float",
+   "label": "Match Confidence",
+   "read_only": 1
+  },
+  {
+   "fieldname": "match_strategy",
+   "fieldtype": "Data",
+   "label": "Match Strategy",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_content",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "summary",
+   "fieldtype": "Small Text",
+   "label": "Summary"
+  },
+  {
+   "fieldname": "content_text",
+   "fieldtype": "Long Text",
+   "label": "Content Text"
+  },
+  {
+   "fieldname": "section_break_payloads",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "signal_json",
+   "fieldtype": "Code",
+   "label": "Signal JSON",
+   "options": "JSON"
+  },
+  {
+   "fieldname": "source_payload_json",
+   "fieldtype": "Code",
+   "label": "Source Payload JSON",
+   "options": "JSON"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-16 23:41:00.000000",
+ "modified_by": "Administrator",
+ "module": "Channel Syncing",
+ "name": "Touchpoint",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Sales Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Sales User",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}
