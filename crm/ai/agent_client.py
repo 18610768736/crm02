@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 import uuid
+from urllib import error, request
 
 from crm.ai.schemas import PanelContext
 
@@ -58,21 +61,59 @@ def _simulate_runtime_response(agent_request: dict[str, object]) -> dict[str, ob
 	}
 
 
+def _execute_via_openclaw_runtime(
+	runtime_url: str,
+	agent_request: dict[str, object],
+) -> dict[str, object]:
+	payload = json.dumps(agent_request).encode("utf-8")
+	headers = {"Content-Type": "application/json"}
+	runtime_token = os.getenv("OPENCLAW_RUNTIME_TOKEN")
+	if runtime_token:
+		headers["Authorization"] = f"Bearer {runtime_token}"
+
+	req = request.Request(runtime_url, data=payload, headers=headers, method="POST")
+	try:
+		with request.urlopen(req, timeout=10) as response:  # noqa: S310 - runtime URL is env-configured
+			body = response.read().decode("utf-8")
+	except error.HTTPError as exc:  # pragma: no cover - network path tested in integration
+		body = exc.read().decode("utf-8") if exc.fp else ""
+		raise RuntimeError(f"runtime http error {exc.code}: {body}") from exc
+	except error.URLError as exc:  # pragma: no cover - network path tested in integration
+		raise RuntimeError(f"runtime unreachable: {exc.reason}") from exc
+
+	try:
+		response_data = json.loads(body) if body else {}
+	except json.JSONDecodeError:
+		response_data = {"raw": body}
+
+	return {
+		"run_id": response_data.get("run_id") or f"run-{uuid.uuid4().hex[:10]}",
+		"provider": "openclaw_runtime",
+		"status": response_data.get("status") or "succeeded",
+		"result": response_data.get("result") or response_data,
+	}
+
+
 def execute_agent_request(
 	agent_request: dict[str, object],
 	max_retries: int = 2,
 ) -> dict[str, object]:
+	runtime_url = os.getenv("OPENCLAW_RUNTIME_URL")
 	attempts = 0
 	last_error: str | None = None
 
 	while attempts <= max_retries:
 		attempts += 1
 		try:
-			response = _simulate_runtime_response(agent_request)
+			if runtime_url:
+				response = _execute_via_openclaw_runtime(runtime_url, agent_request)
+			else:
+				response = _simulate_runtime_response(agent_request)
 			return {
 				"status": "succeeded",
 				"attempts": attempts,
 				"max_retries": max_retries,
+				"mode": "openclaw_http" if runtime_url else "simulation",
 				"response": response,
 			}
 		except Exception as exc:  # pragma: no cover - error path is deterministic in tests

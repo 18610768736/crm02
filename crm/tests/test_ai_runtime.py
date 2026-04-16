@@ -15,6 +15,7 @@ class TestAIRuntime(UnitTestCase):
 
 		self.assertEqual(result["status"], "succeeded")
 		self.assertGreaterEqual(result["attempts"], 1)
+		self.assertEqual(result["mode"], "simulation")
 		self.assertIn("run_id", result["response"])
 
 	def test_execute_agent_request_retries_and_fails_on_retryable_error(self):
