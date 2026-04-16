@@ -4,6 +4,7 @@ import frappe
 
 from crm.ai.governance_repository import persist_audit_log, persist_evidence_links
 from crm.ai.audit import build_audit_record
+from crm.channel_syncing.alerts import emit_sync_alert, list_sync_alerts as list_stored_sync_alerts
 from crm.channel_syncing.connectors import normalize_connector_payload
 from crm.channel_syncing.evidence import build_sync_evidence
 from crm.channel_syncing.evidence import build_sync_evidence_links
@@ -29,14 +30,15 @@ from crm.channel_syncing.repository import (
 	persist_touchpoint,
 	upsert_sync_cursor,
 )
+from crm.channel_syncing.security import verify_webhook_request
 
 
-def _coerce_payload(payload: dict | str | None) -> dict:
+def _coerce_payload(payload: dict | str | None) -> tuple[dict, str]:
 	if isinstance(payload, dict):
-		return payload
+		return payload, json.dumps(payload, ensure_ascii=False, sort_keys=True)
 	if isinstance(payload, str) and payload.strip():
-		return json.loads(payload)
-	return {}
+		return json.loads(payload), payload
+	return {}, "{}"
 
 
 def _coerce_limit(value: int | str | None, default: int = 20) -> int:
@@ -45,9 +47,79 @@ def _coerce_limit(value: int | str | None, default: int = 20) -> int:
 	return max(1, int(value))
 
 
+def _coerce_bool(value: bool | int | str | None) -> bool | None:
+	if value is None:
+		return None
+	if isinstance(value, bool):
+		return value
+	text = str(value).strip().lower()
+	return text in {"1", "true", "yes", "on"}
+
+
+def _raw_event_id(payload: dict) -> str:
+	return (
+		payload.get("event_id")
+		or payload.get("external_id")
+		or payload.get("message_id")
+		or payload.get("msgid")
+		or "pending-external-id"
+	)
+
+
 @frappe.whitelist()
-def ingest_event(channel: str, payload: dict | str | None = None) -> dict:
-	source_payload = _coerce_payload(payload)
+def ingest_event(
+	channel: str,
+	payload: dict | str | None = None,
+	signature: str | None = None,
+	timestamp: str | int | None = None,
+	nonce: str | None = None,
+	verify_signature: bool | int | str | None = None,
+) -> dict:
+	source_payload, raw_payload = _coerce_payload(payload)
+	enforce_signature = _coerce_bool(verify_signature)
+	verification = verify_webhook_request(
+		channel=channel,
+		raw_payload=raw_payload,
+		payload=source_payload,
+		signature=signature,
+		timestamp=timestamp,
+		nonce=nonce,
+		verify_signature=enforce_signature,
+	)
+	if verification.get("required") and not verification.get("verified"):
+		failure_external_id = _raw_event_id(source_payload)
+		cursor_key = source_payload.get("cursor_key") or source_payload.get("workspace_key") or f"{channel}::default"
+		cursor_value = source_payload.get("cursor_value") or source_payload.get("event_time") or failure_external_id
+		retry_count = int(source_payload.get("retry_count") or 0) + 1
+		stored_cursor = upsert_sync_cursor(
+			channel=channel,
+			cursor_key=cursor_key,
+			cursor_value=cursor_value,
+			status="Failed",
+			retry_count=retry_count,
+			last_error=verification.get("reason") or "signature_verification_failed",
+			metadata={
+				"mode": "webhook_guard",
+				"event_id": failure_external_id,
+				"verification": verification,
+			},
+		)
+		alert = emit_sync_alert(
+			channel=channel,
+			code="webhook_signature_failed",
+			severity="error",
+			message=verification.get("error") or "Webhook signature verification failed.",
+			context={
+				"cursor_id": stored_cursor["name"],
+				"reason": verification.get("reason"),
+				"event_id": failure_external_id,
+			},
+		)
+		frappe.throw(
+			f"{verification.get('error') or 'Webhook signature verification failed.'} "
+			f"(alert: {alert['name']})"
+		)
+
 	connector_payload = normalize_connector_payload(channel, source_payload)
 	normalized_event = normalize_event(channel, connector_payload)
 	workspace = persist_channel_workspace(normalized_event)
@@ -115,6 +187,7 @@ def ingest_event(channel: str, payload: dict | str | None = None) -> dict:
 		"normalized_event": normalized_event,
 		"match": match_result,
 		"evidence": evidence,
+		"security": verification,
 		"thread_id": conversation_thread["name"],
 		"touchpoint_id": touchpoint["name"],
 		"identity_id": external_identity["name"] if external_identity else None,
@@ -179,6 +252,24 @@ def list_sync_cursors(
 @frappe.whitelist()
 def get_sync_cursor_detail(cursor_id: str) -> dict:
 	return get_sync_cursor(cursor_id)
+
+
+@frappe.whitelist()
+def list_sync_alerts(
+	channel: str | None = None,
+	severity: str | None = None,
+	limit: int | str | None = 20,
+) -> dict:
+	items = list_stored_sync_alerts(
+		channel=channel,
+		severity=severity,
+		limit=_coerce_limit(limit),
+	)
+	return {
+		"filters": {"channel": channel, "severity": severity},
+		"items": items,
+		"total_count": len(items),
+	}
 
 
 @frappe.whitelist()
