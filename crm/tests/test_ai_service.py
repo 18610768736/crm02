@@ -27,6 +27,7 @@ class TestAIService(UnitTestCase):
 		self.assertEqual(result["job"]["job_type"], "ai_suggestions")
 		self.assertEqual(result["job"]["status"], "queued")
 		self.assertEqual(result["agent_request"]["channel"], "qywx")
+		self.assertEqual(result["runtime"]["status"], "succeeded")
 		self.assertTrue(result["approval"]["required"])
 		self.assertGreaterEqual(len(result["suggestions"]), 2)
 		self.assertTrue(result["audit_id"])

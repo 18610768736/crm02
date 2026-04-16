@@ -1,14 +1,18 @@
 from frappe.tests import UnitTestCase
 
 from crm.api.channel_sync import (
+	get_channel_workspace_detail,
 	get_conversation_thread_detail,
 	get_external_identity_detail,
 	get_meeting_artifact_detail,
+	get_sync_cursor_detail,
 	get_touchpoint_detail,
 	ingest_event,
+	list_channel_workspaces,
 	list_conversation_threads,
 	list_external_identities,
 	list_meeting_artifacts,
+	list_sync_cursors,
 	list_touchpoints,
 )
 from crm.channel_syncing.background_sync import sync_all_channels
@@ -36,6 +40,8 @@ class TestChannelSyncing(UnitTestCase):
 		self.assertEqual(result["channel"], "qywx")
 		self.assertEqual(result["external_id"], "evt-001")
 		self.assertEqual(result["thread_key"], "conv-001")
+		self.assertEqual(result["workspace"]["key"], "qywx::default")
+		self.assertEqual(result["cursor"]["key"], "qywx::default")
 		self.assertEqual(result["contact_hints"]["external_user_ids"], ["ext-001"])
 		self.assertEqual(result["participants"][0]["label"], "张三")
 
@@ -53,6 +59,8 @@ class TestChannelSyncing(UnitTestCase):
 		self.assertEqual(result["normalized_event"]["external_id"], "evt-002")
 		self.assertEqual(result["job"]["job_type"], "channel_sync_ingest")
 		self.assertTrue(result["thread_id"])
+		self.assertTrue(result["workspace_id"])
+		self.assertTrue(result["cursor_id"])
 		self.assertTrue(result["audit_id"])
 		self.assertGreaterEqual(len(result["evidence_ids"]), 1)
 
@@ -102,6 +110,14 @@ class TestChannelSyncing(UnitTestCase):
 		self.assertEqual(thread_detail["reference"]["name"], "LEAD-0003")
 		self.assertGreaterEqual(thread_detail["touchpoint_count"], 1)
 
+		workspace_detail = get_channel_workspace_detail(result["workspace_id"])
+		self.assertEqual(workspace_detail["channel"], "qywx")
+		self.assertEqual(workspace_detail["workspace_key"], "qywx::default")
+
+		cursor_detail = get_sync_cursor_detail(result["cursor_id"])
+		self.assertEqual(cursor_detail["status"], "Succeeded")
+		self.assertEqual(cursor_detail["cursor_value"], "evt-003")
+
 	def test_ingest_event_persists_meeting_artifacts_for_lark_minutes(self):
 		payload = {
 			"event_id": "evt-004",
@@ -134,6 +150,27 @@ class TestChannelSyncing(UnitTestCase):
 		self.assertEqual(artifact_detail["reference"]["name"], "DEAL-0004")
 		self.assertEqual(artifact_detail["conversation_thread"], result["thread_id"])
 		self.assertGreaterEqual(len(artifact_detail["action_items"]), 1)
+
+	def test_channel_workspace_and_cursor_list_apis_support_filters(self):
+		payload = {
+			"event_id": "evt-005",
+			"text": "同步游标测试消息",
+			"customer_name": "李四",
+			"workspace_key": "qywx::tenant-1",
+			"workspace_name": "企业微信租户1",
+			"tenant_id": "tenant-1",
+			"cursor_key": "qywx::tenant-1",
+			"cursor_value": "cursor-005",
+		}
+		result = ingest_event("qywx", payload)
+
+		workspace_list = list_channel_workspaces(channel="qywx")
+		self.assertGreaterEqual(workspace_list["total_count"], 1)
+		self.assertTrue(any(item["name"] == result["workspace_id"] for item in workspace_list["items"]))
+
+		cursor_list = list_sync_cursors(channel="qywx", workspace_id=result["workspace_id"])
+		self.assertGreaterEqual(cursor_list["total_count"], 1)
+		self.assertTrue(any(item["name"] == result["cursor_id"] for item in cursor_list["items"]))
 
 	def test_sync_all_channels_returns_supported_channel_statuses(self):
 		result = sync_all_channels()

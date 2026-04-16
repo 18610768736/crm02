@@ -29,6 +29,7 @@ class TestAIAPI(UnitTestCase):
 
 		self.assertEqual(result["status"], "drafted")
 		self.assertEqual(result["agent_request"]["prompt"], "请起草一封报价跟进邮件")
+		self.assertEqual(result["runtime"]["status"], "succeeded")
 		self.assertEqual(result["suggestions"][0]["channel"], "email")
 		self.assertEqual(result["audit"]["action"], "generate_suggestions")
 		self.assertTrue(result["audit_id"])

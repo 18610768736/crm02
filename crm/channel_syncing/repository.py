@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from copy import deepcopy
+from datetime import datetime
 from typing import Any
 
 try:
@@ -14,11 +15,15 @@ EXTERNAL_IDENTITY_DOCTYPE = "External Identity"
 MEETING_ARTIFACT_DOCTYPE = "Meeting Artifact"
 TOUCHPOINT_DOCTYPE = "Touchpoint"
 CONVERSATION_THREAD_DOCTYPE = "Conversation Thread"
+CHANNEL_WORKSPACE_DOCTYPE = "Channel Workspace"
+SYNC_CURSOR_DOCTYPE = "Sync Cursor"
 
 _VOLATILE_EXTERNAL_IDENTITIES: dict[str, dict[str, Any]] = {}
 _VOLATILE_MEETING_ARTIFACTS: dict[str, dict[str, Any]] = {}
 _VOLATILE_TOUCHPOINTS: dict[str, dict[str, Any]] = {}
 _VOLATILE_CONVERSATION_THREADS: dict[str, dict[str, Any]] = {}
+_VOLATILE_CHANNEL_WORKSPACES: dict[str, dict[str, Any]] = {}
+_VOLATILE_SYNC_CURSORS: dict[str, dict[str, Any]] = {}
 
 
 def _doc_type_available(doctype: str) -> bool:
@@ -51,6 +56,20 @@ def _json_loads(value: str | None) -> Any:
 	if not value:
 		return {}
 	return json.loads(value)
+
+
+def _coerce_datetime(value: str | None) -> str | None:
+	if not value:
+		return None
+	if frappe:
+		try:
+			return frappe.utils.get_datetime_str(frappe.utils.get_datetime(value))
+		except Exception:
+			pass
+	try:
+		return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+	except ValueError:
+		return value
 
 
 def _reference(match_result: dict[str, Any]) -> dict[str, Any]:
@@ -153,6 +172,37 @@ def _conversation_thread_fields() -> list[str]:
 	]
 
 
+def _channel_workspace_fields() -> list[str]:
+	return [
+		"name",
+		"channel",
+		"workspace_key",
+		"workspace_name",
+		"tenant_id",
+		"account_id",
+		"status",
+		"last_synced_at",
+		"cursor_key",
+		"cursor_value",
+		"metadata_json",
+	]
+
+
+def _sync_cursor_fields() -> list[str]:
+	return [
+		"name",
+		"channel",
+		"workspace",
+		"cursor_key",
+		"cursor_value",
+		"status",
+		"retry_count",
+		"last_synced_at",
+		"last_error",
+		"metadata_json",
+	]
+
+
 def _to_touchpoint_detail(record: dict[str, Any]) -> dict[str, Any]:
 	return {
 		"name": record["name"],
@@ -221,6 +271,156 @@ def _to_conversation_thread_detail(record: dict[str, Any]) -> dict[str, Any]:
 		"metadata": _json_loads(record.get("metadata_json")),
 		"reference": _reference_payload(record),
 	}
+
+
+def _to_channel_workspace_detail(record: dict[str, Any]) -> dict[str, Any]:
+	return {
+		"name": record["name"],
+		"channel": record.get("channel"),
+		"workspace_key": record.get("workspace_key"),
+		"workspace_name": record.get("workspace_name"),
+		"tenant_id": record.get("tenant_id"),
+		"account_id": record.get("account_id"),
+		"status": record.get("status"),
+		"last_synced_at": record.get("last_synced_at"),
+		"cursor_key": record.get("cursor_key"),
+		"cursor_value": record.get("cursor_value"),
+		"metadata": _json_loads(record.get("metadata_json")),
+	}
+
+
+def _to_sync_cursor_detail(record: dict[str, Any]) -> dict[str, Any]:
+	return {
+		"name": record["name"],
+		"channel": record.get("channel"),
+		"workspace": record.get("workspace"),
+		"cursor_key": record.get("cursor_key"),
+		"cursor_value": record.get("cursor_value"),
+		"status": record.get("status"),
+		"retry_count": int(record.get("retry_count") or 0),
+		"last_synced_at": record.get("last_synced_at"),
+		"last_error": record.get("last_error"),
+		"metadata": _json_loads(record.get("metadata_json")),
+	}
+
+
+def persist_channel_workspace(normalized_event: dict[str, Any]) -> dict[str, Any]:
+	workspace = normalized_event.get("workspace") or {}
+	workspace_key = workspace.get("key") or f"{normalized_event.get('channel')}::default"
+	filters = {"workspace_key": workspace_key}
+	cursor = normalized_event.get("cursor") or {}
+	payload = {
+		"channel": normalized_event.get("channel"),
+		"workspace_key": workspace_key,
+		"workspace_name": workspace.get("name") or workspace_key,
+		"tenant_id": workspace.get("tenant_id"),
+		"account_id": workspace.get("account_id"),
+		"status": "Active",
+		"last_synced_at": _coerce_datetime(normalized_event.get("occurred_at")),
+		"cursor_key": cursor.get("key"),
+		"cursor_value": cursor.get("value"),
+		"metadata_json": _json_dumps(
+			{
+				"event_type": normalized_event.get("event_type"),
+				"last_external_id": normalized_event.get("external_id"),
+			}
+		),
+	}
+
+	if _doc_type_available(CHANNEL_WORKSPACE_DOCTYPE):
+		name = frappe.db.exists(CHANNEL_WORKSPACE_DOCTYPE, filters)
+		if name:
+			frappe.db.set_value(CHANNEL_WORKSPACE_DOCTYPE, name, payload, update_modified=True)
+			record = frappe.db.get_value(
+				CHANNEL_WORKSPACE_DOCTYPE,
+				name,
+				_channel_workspace_fields(),
+				as_dict=True,
+			)
+		else:
+			try:
+				doc = frappe.get_doc({"doctype": CHANNEL_WORKSPACE_DOCTYPE, **payload})
+				doc.insert(ignore_permissions=True)
+				record = doc.as_dict()
+			except Exception:
+				existing_name = frappe.db.exists(CHANNEL_WORKSPACE_DOCTYPE, filters)
+				if not existing_name:
+					raise
+				frappe.db.set_value(CHANNEL_WORKSPACE_DOCTYPE, existing_name, payload, update_modified=True)
+				record = frappe.db.get_value(
+					CHANNEL_WORKSPACE_DOCTYPE,
+					existing_name,
+					_channel_workspace_fields(),
+					as_dict=True,
+				)
+		return _to_channel_workspace_detail(record)
+
+	record = _upsert_volatile(
+		_VOLATILE_CHANNEL_WORKSPACES,
+		filters,
+		{"name": _generate_name("WS"), **payload},
+	)
+	return _to_channel_workspace_detail(record)
+
+
+def upsert_sync_cursor(
+	channel: str,
+	cursor_key: str,
+	cursor_value: str,
+	workspace_id: str | None = None,
+	status: str = "Succeeded",
+	retry_count: int = 0,
+	last_synced_at: str | None = None,
+	last_error: str | None = None,
+	metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+	filters = {"cursor_key": cursor_key}
+	payload = {
+		"channel": channel,
+		"workspace": workspace_id,
+		"cursor_key": cursor_key,
+		"cursor_value": cursor_value,
+		"status": status,
+		"retry_count": retry_count,
+		"last_synced_at": _coerce_datetime(last_synced_at),
+		"last_error": last_error,
+		"metadata_json": _json_dumps(metadata or {}),
+	}
+
+	if _doc_type_available(SYNC_CURSOR_DOCTYPE):
+		name = frappe.db.exists(SYNC_CURSOR_DOCTYPE, filters)
+		if name:
+			frappe.db.set_value(SYNC_CURSOR_DOCTYPE, name, payload, update_modified=True)
+			record = frappe.db.get_value(
+				SYNC_CURSOR_DOCTYPE,
+				name,
+				_sync_cursor_fields(),
+				as_dict=True,
+			)
+		else:
+			try:
+				doc = frappe.get_doc({"doctype": SYNC_CURSOR_DOCTYPE, **payload})
+				doc.insert(ignore_permissions=True)
+				record = doc.as_dict()
+			except Exception:
+				existing_name = frappe.db.exists(SYNC_CURSOR_DOCTYPE, filters)
+				if not existing_name:
+					raise
+				frappe.db.set_value(SYNC_CURSOR_DOCTYPE, existing_name, payload, update_modified=True)
+				record = frappe.db.get_value(
+					SYNC_CURSOR_DOCTYPE,
+					existing_name,
+					_sync_cursor_fields(),
+					as_dict=True,
+				)
+		return _to_sync_cursor_detail(record)
+
+	record = _upsert_volatile(
+		_VOLATILE_SYNC_CURSORS,
+		filters,
+		{"name": _generate_name("CUR"), **payload},
+	)
+	return _to_sync_cursor_detail(record)
 
 
 def persist_conversation_thread(
@@ -543,6 +743,69 @@ def get_conversation_thread(thread_id: str) -> dict[str, Any]:
 	)
 
 
+def list_channel_workspaces(
+	channel: str | None = None,
+	status: str | None = None,
+	limit: int = 20,
+) -> list[dict[str, Any]]:
+	filters: dict[str, Any] = {}
+	if channel:
+		filters["channel"] = channel
+	if status:
+		filters["status"] = status
+	return _list_records(
+		CHANNEL_WORKSPACE_DOCTYPE,
+		_VOLATILE_CHANNEL_WORKSPACES,
+		_channel_workspace_fields(),
+		_to_channel_workspace_detail,
+		filters,
+		"last_synced_at desc, modified desc",
+		limit,
+	)
+
+
+def get_channel_workspace(workspace_id: str) -> dict[str, Any]:
+	return _get_record(
+		CHANNEL_WORKSPACE_DOCTYPE,
+		_VOLATILE_CHANNEL_WORKSPACES,
+		workspace_id,
+		_to_channel_workspace_detail,
+	)
+
+
+def list_sync_cursors(
+	channel: str | None = None,
+	workspace_id: str | None = None,
+	status: str | None = None,
+	limit: int = 20,
+) -> list[dict[str, Any]]:
+	filters: dict[str, Any] = {}
+	if channel:
+		filters["channel"] = channel
+	if workspace_id:
+		filters["workspace"] = workspace_id
+	if status:
+		filters["status"] = status
+	return _list_records(
+		SYNC_CURSOR_DOCTYPE,
+		_VOLATILE_SYNC_CURSORS,
+		_sync_cursor_fields(),
+		_to_sync_cursor_detail,
+		filters,
+		"last_synced_at desc, modified desc",
+		limit,
+	)
+
+
+def get_sync_cursor(cursor_id: str) -> dict[str, Any]:
+	return _get_record(
+		SYNC_CURSOR_DOCTYPE,
+		_VOLATILE_SYNC_CURSORS,
+		cursor_id,
+		_to_sync_cursor_detail,
+	)
+
+
 def should_persist_meeting_artifact(normalized_event: dict[str, Any]) -> bool:
 	event_type = str(normalized_event.get("event_type") or "")
 	source_payload = normalized_event.get("source_payload", {})
@@ -581,10 +844,12 @@ def _list_records(
 		)
 
 	items.sort(
-		key=lambda item: item.get("occurred_at")
-		or item.get("processed_at")
-		or item.get("last_seen_at")
-		or "",
+		key=lambda item: _sort_key(
+			item.get("occurred_at")
+			or item.get("processed_at")
+			or item.get("last_seen_at")
+			or item.get("last_synced_at")
+		),
 		reverse=True,
 	)
 	return items[:limit]
@@ -619,6 +884,14 @@ def _build_reference_filters(
 	if channel:
 		filters["channel"] = channel
 	return filters
+
+
+def _sort_key(value: Any) -> str:
+	if value is None:
+		return ""
+	if hasattr(value, "isoformat"):
+		return value.isoformat()
+	return str(value)
 
 
 def _extract_customer_name(normalized_event: dict[str, Any]) -> str | None:

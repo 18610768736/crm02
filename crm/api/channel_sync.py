@@ -9,18 +9,24 @@ from crm.channel_syncing.evidence import build_sync_evidence_links
 from crm.channel_syncing.matcher import match_event_to_reference
 from crm.channel_syncing.normalizer import normalize_event
 from crm.channel_syncing.repository import (
+	get_channel_workspace,
 	get_conversation_thread,
 	get_external_identity,
 	get_meeting_artifact,
+	get_sync_cursor,
 	get_touchpoint,
+	list_channel_workspaces as list_stored_channel_workspaces,
 	list_conversation_threads as list_stored_conversation_threads,
 	list_external_identities as list_stored_external_identities,
 	list_meeting_artifacts as list_stored_meeting_artifacts,
+	list_sync_cursors as list_stored_sync_cursors,
 	list_touchpoints as list_stored_touchpoints,
+	persist_channel_workspace,
 	persist_conversation_thread,
 	persist_external_identity,
 	persist_meeting_artifact,
 	persist_touchpoint,
+	upsert_sync_cursor,
 )
 
 
@@ -42,6 +48,12 @@ def _coerce_limit(value: int | str | None, default: int = 20) -> int:
 def ingest_event(channel: str, payload: dict | str | None = None) -> dict:
 	source_payload = _coerce_payload(payload)
 	normalized_event = normalize_event(channel, source_payload)
+	workspace = persist_channel_workspace(normalized_event)
+	cursor = normalized_event.get("cursor") or {}
+	cursor_key = cursor.get("key") or f"{channel}::{workspace['workspace_key']}"
+	cursor_value = cursor.get("value") or normalized_event["external_id"]
+	retry_count = int(cursor.get("retry_count") or 0)
+
 	match_result = match_event_to_reference(normalized_event)
 	evidence = build_sync_evidence(normalized_event)
 	conversation_thread = persist_conversation_thread(normalized_event, match_result)
@@ -77,11 +89,27 @@ def ingest_event(channel: str, payload: dict | str | None = None) -> dict:
 		},
 	)
 	stored_audit = persist_audit_log(audit)
+	stored_cursor = upsert_sync_cursor(
+		channel=channel,
+		cursor_key=cursor_key,
+		cursor_value=cursor_value,
+		workspace_id=workspace["name"],
+		status="Succeeded",
+		retry_count=retry_count,
+		last_synced_at=normalized_event.get("occurred_at"),
+		metadata={
+			"event_id": normalized_event["external_id"],
+			"thread_id": conversation_thread["name"],
+			"touchpoint_id": touchpoint["name"],
+		},
+	)
 
 	return {
 		"ok": True,
 		"status": "accepted",
 		"channel": channel,
+		"workspace_id": workspace["name"],
+		"cursor_id": stored_cursor["name"],
 		"normalized_event": normalized_event,
 		"match": match_result,
 		"evidence": evidence,
@@ -97,6 +125,58 @@ def ingest_event(channel: str, payload: dict | str | None = None) -> dict:
 			"status": "queued",
 		},
 	}
+
+
+@frappe.whitelist()
+def list_channel_workspaces(
+	channel: str | None = None,
+	status: str | None = None,
+	limit: int | str | None = 20,
+) -> dict:
+	items = list_stored_channel_workspaces(
+		channel=channel,
+		status=status,
+		limit=_coerce_limit(limit),
+	)
+	return {
+		"filters": {"channel": channel, "status": status},
+		"items": items,
+		"total_count": len(items),
+	}
+
+
+@frappe.whitelist()
+def get_channel_workspace_detail(workspace_id: str) -> dict:
+	return get_channel_workspace(workspace_id)
+
+
+@frappe.whitelist()
+def list_sync_cursors(
+	channel: str | None = None,
+	workspace_id: str | None = None,
+	status: str | None = None,
+	limit: int | str | None = 20,
+) -> dict:
+	items = list_stored_sync_cursors(
+		channel=channel,
+		workspace_id=workspace_id,
+		status=status,
+		limit=_coerce_limit(limit),
+	)
+	return {
+		"filters": {
+			"channel": channel,
+			"workspace_id": workspace_id,
+			"status": status,
+		},
+		"items": items,
+		"total_count": len(items),
+	}
+
+
+@frappe.whitelist()
+def get_sync_cursor_detail(cursor_id: str) -> dict:
+	return get_sync_cursor(cursor_id)
 
 
 @frappe.whitelist()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from crm.ai.agent_client import build_agent_request
+from crm.ai.agent_client import build_agent_request, execute_agent_request
 from crm.ai.approvals import build_approval_request
 from crm.ai.audit import build_audit_record
 from crm.ai.background import build_job_stub
@@ -29,6 +29,7 @@ def generate_suggestions(
 ) -> SuggestionResponse:
 	panel_context = build_panel_context(reference_doctype, reference_name, context_type=context_type)
 	agent_request = build_agent_request(panel_context, prompt=prompt, channel=channel)
+	runtime_result = execute_agent_request(agent_request)
 	job = build_job_stub(reference_doctype, reference_name)
 	approval = build_approval_request(reference_doctype, reference_name, channel=channel)
 	evidence = build_evidence_packet(panel_context)
@@ -59,6 +60,8 @@ def generate_suggestions(
 			"channel": channel,
 			"context_type": context_type,
 			"suggestion_count": len(stored_suggestions),
+			"runtime_status": runtime_result.get("status"),
+			"runtime_attempts": runtime_result.get("attempts"),
 		},
 	)
 	stored_audit = persist_audit_log(audit)
@@ -69,6 +72,7 @@ def generate_suggestions(
 		"job": job,
 		"agent_request": agent_request,
 		"approval": approval,
+		"runtime": runtime_result,
 		"evidence": evidence,
 		"suggestions": suggestions,
 		"suggestion_ids": [suggestion["name"] for suggestion in stored_suggestions],

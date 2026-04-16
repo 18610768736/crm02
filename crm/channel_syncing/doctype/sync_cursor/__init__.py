@@ -1,0 +1,1 @@
+"""Sync Cursor DocType package."""

@@ -50,6 +50,7 @@ class SuggestionResponse(TypedDict):
 	job: AIJob
 	agent_request: dict[str, Any]
 	approval: ApprovalRequest
+	runtime: dict[str, Any]
 	evidence: dict[str, Any]
 	suggestions: list[AISuggestion]
 	suggestion_ids: list[str]

@@ -11,6 +11,15 @@ def _as_list(value: Any) -> list[str]:
 	return [str(value)]
 
 
+def _as_int(value: Any, default: int = 0) -> int:
+	if value is None:
+		return default
+	try:
+		return int(value)
+	except (TypeError, ValueError):
+		return default
+
+
 def normalize_event(channel: str, payload: dict[str, Any]) -> dict[str, Any]:
 	event_id = payload.get("event_id") or payload.get("external_id") or payload.get("message_id")
 	event_id = event_id or "pending-external-id"
@@ -21,6 +30,14 @@ def normalize_event(channel: str, payload: dict[str, Any]) -> dict[str, Any]:
 	customer_name = customer_name or "unknown_customer"
 	owner_name = payload.get("owner_name") or payload.get("staff_name") or payload.get("operator_name")
 	owner_name = owner_name or "unassigned_owner"
+	workspace_key = (
+		payload.get("workspace_key")
+		or payload.get("tenant_id")
+		or payload.get("channel_account")
+		or f"{channel}::default"
+	)
+	cursor_key = payload.get("cursor_key") or workspace_key
+	cursor_value = payload.get("cursor_value") or payload.get("event_time") or event_id
 
 	return {
 		"channel": channel,
@@ -47,5 +64,16 @@ def normalize_event(channel: str, payload: dict[str, Any]) -> dict[str, Any]:
 			{"role": "customer", "label": customer_name},
 			{"role": "owner", "label": owner_name},
 		],
+		"workspace": {
+			"key": workspace_key,
+			"name": payload.get("workspace_name") or payload.get("tenant_name") or workspace_key,
+			"tenant_id": payload.get("tenant_id"),
+			"account_id": payload.get("account_id") or payload.get("channel_account"),
+		},
+		"cursor": {
+			"key": cursor_key,
+			"value": cursor_value,
+			"retry_count": _as_int(payload.get("retry_count"), default=0),
+		},
 		"source_payload": payload,
 	}
