@@ -35,9 +35,21 @@ from crm.api.dashboard import (
 
 class TestDashboard(IntegrationTestCase):
 	@classmethod
+	def _reset_dashboard_aggregate_data(cls):
+		"""
+		Hard-reset aggregate source tables so dashboard assertions are independent
+		from previously executed modules.
+		"""
+		for doctype in ("CRM Status Change Log", "CRM Deal", "CRM Lead"):
+			if frappe.db.exists("DocType", doctype):
+				frappe.db.delete(doctype)
+		frappe.db.commit()
+
+	@classmethod
 	def setUpClass(cls):
 		"""Set up test records once for all tests"""
 		super().setUpClass()
+		cls._reset_dashboard_aggregate_data()
 
 		# Mark timestamp before creating test data
 		cls.test_start_time = frappe.utils.now()
@@ -59,7 +71,7 @@ class TestDashboard(IntegrationTestCase):
 	@classmethod
 	def tearDownClass(cls):
 		"""Clean up test records after all tests"""
-		frappe.db.rollback()
+		cls._reset_dashboard_aggregate_data()
 		super().tearDownClass()
 
 	def test_get_total_leads(self):
