@@ -6,6 +6,11 @@ from crm.ai.governance_repository import (
 	list_audit_logs as list_stored_audit_logs,
 	list_evidence_links as list_stored_evidence_links,
 )
+from crm.ai.memory_repository import (
+	compile_customer_memory as compile_stored_customer_memory,
+	get_customer_memory as get_stored_customer_memory,
+	list_customer_memories as list_stored_customer_memories,
+)
 from crm.ai.repository import get_suggestion, list_suggestions as list_stored_suggestions
 from crm.ai.service import (
 	build_panel_context as build_ai_panel_context,
@@ -103,6 +108,29 @@ def list_evidence_links(
 	items = list_stored_evidence_links(reference_doctype, reference_name, limit=_coerce_limit(limit))
 	return {
 		"reference": {"doctype": reference_doctype, "name": reference_name},
+		"items": items,
+		"total_count": len(items),
+	}
+
+
+@frappe.whitelist()
+def compile_customer_memory(reference_doctype: str, reference_name: str) -> dict:
+	return compile_stored_customer_memory(reference_doctype, reference_name)
+
+
+@frappe.whitelist()
+def get_customer_memory(reference_doctype: str, reference_name: str) -> dict:
+	return get_stored_customer_memory(reference_doctype, reference_name)
+
+
+@frappe.whitelist()
+def list_customer_memories(
+	reference_doctype: str | None = None,
+	limit: int | str | None = 20,
+) -> dict:
+	items = list_stored_customer_memories(reference_doctype=reference_doctype, limit=_coerce_limit(limit))
+	return {
+		"filters": {"reference_doctype": reference_doctype},
 		"items": items,
 		"total_count": len(items),
 	}

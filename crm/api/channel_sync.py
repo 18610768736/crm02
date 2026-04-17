@@ -4,6 +4,7 @@ import frappe
 
 from crm.ai.governance_repository import persist_audit_log, persist_evidence_links
 from crm.ai.audit import build_audit_record
+from crm.ai.lead_agent import ensure_reference_for_event
 from crm.channel_syncing.background_sync import sync_all_channels, sync_channel
 from crm.channel_syncing.alerts import emit_sync_alert, list_sync_alerts as list_stored_sync_alerts
 from crm.channel_syncing.connectors import normalize_connector_payload
@@ -141,6 +142,7 @@ def ingest_event(
 	retry_count = int(cursor.get("retry_count") or 0)
 
 	match_result = match_event_to_reference(normalized_event)
+	match_result, auto_profile = ensure_reference_for_event(normalized_event, match_result)
 	evidence = build_sync_evidence(normalized_event)
 	conversation_thread = persist_conversation_thread(normalized_event, match_result)
 	touchpoint = persist_touchpoint(normalized_event, match_result, conversation_thread)
@@ -172,6 +174,7 @@ def ingest_event(
 		payload={
 			"match_strategy": match_result.get("strategy"),
 			"thread_id": conversation_thread["name"],
+			"auto_profile_reference": (auto_profile or {}).get("reference"),
 		},
 	)
 	stored_audit = persist_audit_log(audit)
@@ -198,6 +201,7 @@ def ingest_event(
 		"cursor_id": stored_cursor["name"],
 		"normalized_event": normalized_event,
 		"match": match_result,
+		"auto_profile": auto_profile,
 		"evidence": evidence,
 		"security": verification,
 		"thread_id": conversation_thread["name"],

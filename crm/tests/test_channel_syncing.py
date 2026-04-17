@@ -102,6 +102,8 @@ class TestChannelSyncing(UnitTestCase):
 		self.assertTrue(result["thread_id"])
 		self.assertTrue(result["workspace_id"])
 		self.assertTrue(result["cursor_id"])
+		self.assertEqual(result["match"]["reference"]["doctype"], "CRM Lead")
+		self.assertTrue(result["auto_profile"])
 		self.assertTrue(result["audit_id"])
 		self.assertGreaterEqual(len(result["evidence_ids"]), 1)
 

@@ -1,10 +1,13 @@
 from frappe.tests import UnitTestCase
 
 from crm.api.ai import (
+	compile_customer_memory,
 	generate_suggestions,
+	get_customer_memory,
 	get_panel_context,
 	get_suggestion_detail,
 	list_audit_logs,
+	list_customer_memories,
 	list_evidence_links,
 	list_suggestions,
 )
@@ -67,3 +70,21 @@ class TestAIAPI(UnitTestCase):
 		evidence_payload = list_evidence_links("CRM Deal", "DEAL-0003")
 		self.assertGreaterEqual(evidence_payload["total_count"], 1)
 		self.assertEqual(evidence_payload["items"][0]["reference"]["name"], "DEAL-0003")
+
+	def test_customer_memory_apis_return_compiled_memory(self):
+		generate_suggestions(
+			"CRM Lead",
+			"LEAD-MEMORY-API-001",
+			channel="email",
+			prompt="总结客户记忆",
+		)
+
+		compiled = compile_customer_memory("CRM Lead", "LEAD-MEMORY-API-001")
+		self.assertEqual(compiled["reference"]["doctype"], "CRM Lead")
+		self.assertTrue(compiled["summary"])
+
+		detail = get_customer_memory("CRM Lead", "LEAD-MEMORY-API-001")
+		self.assertEqual(detail["memory_key"], compiled["memory_key"])
+
+		list_payload = list_customer_memories(reference_doctype="CRM Lead")
+		self.assertGreaterEqual(list_payload["total_count"], 1)
