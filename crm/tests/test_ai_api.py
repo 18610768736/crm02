@@ -1,3 +1,6 @@
+import os
+from unittest.mock import MagicMock, patch
+
 from frappe.tests import UnitTestCase
 
 from crm.api.ai import (
@@ -11,9 +14,35 @@ from crm.api.ai import (
 	list_evidence_links,
 	list_suggestions,
 )
+from crm.api.ai_runtime import get_runtime_handshake, get_runtime_status
+
+
+def _mock_response(status: int, body: str) -> MagicMock:
+	response = MagicMock()
+	response.status = status
+	response.getcode.return_value = status
+	response.read.return_value = body.encode("utf-8")
+	response.__enter__.return_value = response
+	response.__exit__.return_value = False
+	return response
 
 
 class TestAIAPI(UnitTestCase):
+	def setUp(self):
+		super().setUp()
+		self._runtime_env = {
+			"OPENCLAW_RUNTIME_MODE": os.getenv("OPENCLAW_RUNTIME_MODE"),
+			"OPENCLAW_RUNTIME_URL": os.getenv("OPENCLAW_RUNTIME_URL"),
+		}
+
+	def tearDown(self):
+		for key, value in self._runtime_env.items():
+			if value is None:
+				os.environ.pop(key, None)
+			else:
+				os.environ[key] = value
+		super().tearDown()
+
 	def test_get_panel_context_exposes_expected_context_shape(self):
 		result = get_panel_context("CRM Lead", "LEAD-0002", "lead_panel")
 
@@ -88,3 +117,41 @@ class TestAIAPI(UnitTestCase):
 
 		list_payload = list_customer_memories(reference_doctype="CRM Lead")
 		self.assertGreaterEqual(list_payload["total_count"], 1)
+
+	def test_runtime_status_api_returns_readiness_payload(self):
+		os.environ["OPENCLAW_RUNTIME_MODE"] = "production"
+		os.environ["OPENCLAW_RUNTIME_URL"] = "https://runtime.example.com/runs"
+
+		with patch(
+			"crm.ai.agent_client.request.urlopen",
+			side_effect=[
+				_mock_response(200, '{"status":"ok","healthy":true}'),
+				_mock_response(
+					200,
+					'{"status":"ok","protocol_version":"crm-ai-runtime.v1","runtime_version":"2026.04.17","capabilities":["context_grounding","draft_generation","audit_logging"]}',
+				),
+			],
+		):
+			result = get_runtime_status()
+
+		self.assertEqual(result["mode"], "production")
+		self.assertTrue(result["health"]["healthy"])
+		self.assertTrue(result["ready"])
+		self.assertTrue(result["handshake"]["compatible"])
+
+	def test_runtime_handshake_api_reports_missing_capabilities(self):
+		os.environ["OPENCLAW_RUNTIME_URL"] = "https://runtime.example.com/runs"
+
+		with patch(
+			"crm.ai.agent_client.request.urlopen",
+			return_value=_mock_response(
+				200,
+				'{"status":"ok","protocol_version":"crm-ai-runtime.v1","runtime_version":"2026.04.17","capabilities":["context_grounding"]}',
+			),
+		):
+			result = get_runtime_handshake()
+
+		self.assertFalse(result["compatible"])
+		self.assertFalse(result["capabilities_ok"])
+		self.assertEqual(result["reason"], "missing_capabilities")
+		self.assertIn("draft_generation", result["missing_capabilities"])

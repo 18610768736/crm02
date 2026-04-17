@@ -2,13 +2,24 @@ from __future__ import annotations
 
 import frappe
 
-from crm.ai.agent_client import build_agent_request, check_runtime_health, execute_agent_request
+from crm.ai.agent_client import (
+	build_agent_request,
+	check_runtime_handshake,
+	check_runtime_health,
+	check_runtime_readiness,
+	execute_agent_request,
+)
 from crm.ai.service import build_panel_context
 
 
 @frappe.whitelist()
 def get_runtime_status() -> dict:
-	return check_runtime_health()
+	return check_runtime_readiness()
+
+
+@frappe.whitelist()
+def get_runtime_handshake() -> dict:
+	return check_runtime_handshake()
 
 
 @frappe.whitelist()
@@ -29,8 +40,8 @@ def run_runtime_smoke_test(
 	return {
 		"status": runtime.get("status"),
 		"health": check_runtime_health(),
+		"readiness": runtime.get("readiness"),
 		"runtime": runtime,
 		"agent_request": agent_request,
 		"reference": panel_context["reference"],
 	}
-

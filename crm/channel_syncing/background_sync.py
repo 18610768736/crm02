@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from crm.channel_syncing.alerts import emit_sync_alert
@@ -29,6 +30,21 @@ def _is_auth_failure(error_message: str | None) -> bool:
 	return any(keyword in text for keyword in ("401", "403", "unauthorized", "invalid token", "invalid credential"))
 
 
+def _as_int(value: Any, default: int) -> int:
+	try:
+		return int(value)
+	except (TypeError, ValueError):
+		return default
+
+
+def _scheduled_channels_from_env() -> list[str] | None:
+	raw_channels = str(os.getenv("CRM_CHANNEL_SYNC_SCHEDULED_CHANNELS") or "").strip()
+	if not raw_channels:
+		return None
+	channels = [item.strip() for item in raw_channels.split(",") if item.strip()]
+	return channels or None
+
+
 def _sync_single_credential(
 	channel: str,
 	credential: dict[str, Any],
@@ -40,6 +56,7 @@ def _sync_single_credential(
 	credential_id = credential["name"]
 	credential_key = credential.get("credential_key") or credential_id
 	metadata = credential.get("metadata") or {}
+	previous_failure_count = int(credential.get("failure_count") or 0)
 	target_cursor_key = cursor_key or f"{channel}::{credential_key}"
 	target_cursor_value = str(cursor_value or metadata.get("last_cursor_value") or 0)
 	attempt = 0
@@ -80,6 +97,7 @@ def _sync_single_credential(
 					"credential_id": credential_id,
 					"processed_event_ids": processed_event_ids,
 					"event_count": len(processed_event_ids),
+					"connector_mode": pull_result.get("mode") or metadata.get("pull_mode") or "mock",
 				},
 			)
 			upsert_channel_credential(
@@ -97,10 +115,29 @@ def _sync_single_credential(
 					"last_cursor_key": pull_result.get("cursor_key") or target_cursor_key,
 					"last_cursor_value": next_cursor_value,
 					"last_pull_count": len(processed_event_ids),
+					"last_pull_mode": pull_result.get("mode") or metadata.get("pull_mode") or "mock",
+					"last_request_url": pull_result.get("request_url"),
+					"last_http_status_code": pull_result.get("http_status_code"),
+					"last_success_at": stored_cursor.get("last_synced_at"),
+					"last_error": None,
+					"last_error_kind": None,
 				},
 				last_validated_at=stored_cursor.get("last_synced_at"),
 				failure_count=0,
 			)
+			if previous_failure_count > 0 or attempt > 1:
+				emit_sync_alert(
+					channel=channel,
+					code="pull_sync_recovered",
+					severity="info",
+					message=f"Pull sync recovered for credential {credential_key}.",
+					context={
+						"credential_id": credential_id,
+						"cursor_id": stored_cursor["name"],
+						"retry_count": max(attempt - 1, 0),
+						"event_count": len(processed_event_ids),
+					},
+				)
 			return {
 				"channel": channel,
 				"credential_id": credential_id,
@@ -111,6 +148,7 @@ def _sync_single_credential(
 				"retry_count": max(attempt - 1, 0),
 				"event_count": len(processed_event_ids),
 				"event_ids": processed_event_ids,
+				"connector_mode": pull_result.get("mode") or metadata.get("pull_mode") or "mock",
 			}
 		except Exception as exc:  # pragma: no cover - defensive fallback
 			last_error = str(exc)
@@ -128,6 +166,7 @@ def _sync_single_credential(
 					"mode": "pull_sync",
 					"credential_id": credential_id,
 					"attempt": attempt,
+					"max_retries": max_retries,
 				},
 			)
 			upsert_channel_credential(
@@ -150,9 +189,24 @@ def _sync_single_credential(
 					"last_cursor_value": target_cursor_value,
 					"last_error": last_error,
 					"last_error_kind": "auth" if auth_failure else "operational",
+					"last_failure_at": stored_cursor.get("last_synced_at"),
 				},
 				failure_count=attempt,
 			)
+			if not final_failure:
+				emit_sync_alert(
+					channel=channel,
+					code="pull_sync_retrying",
+					severity="warning",
+					message=f"Pull sync retrying for credential {credential_key}: {last_error}",
+					context={
+						"credential_id": credential_id,
+						"cursor_id": stored_cursor["name"],
+						"cursor_key": target_cursor_key,
+						"attempt": attempt,
+						"max_retries": max_retries,
+					},
+				)
 			if final_failure:
 				emit_sync_alert(
 					channel=channel,
@@ -166,12 +220,25 @@ def _sync_single_credential(
 						"attempt": attempt,
 					},
 				)
+				if auth_failure:
+					emit_sync_alert(
+						channel=channel,
+						code="pull_sync_auth_invalid",
+						severity="error",
+						message=f"Credential {credential_key} marked invalid after auth failure.",
+						context={
+							"credential_id": credential_id,
+							"cursor_id": stored_cursor["name"],
+							"cursor_key": target_cursor_key,
+						},
+					)
 				break
 
 	return {
 		"channel": channel,
 		"credential_id": credential_id,
 		"status": "failed",
+		"cursor_id": stored_cursor["name"] if "stored_cursor" in locals() else None,
 		"cursor_key": target_cursor_key,
 		"cursor_value": target_cursor_value,
 		"retry_count": max_retries + 1,
@@ -254,3 +321,25 @@ def sync_all_channels(
 		)
 		for channel in target_channels
 	]
+
+
+def run_scheduled_pull_sync() -> dict[str, Any]:
+	target_channels = _scheduled_channels_from_env()
+	limit = max(1, _as_int(os.getenv("CRM_CHANNEL_SYNC_SCHEDULED_LIMIT"), 20))
+	max_retries = max(0, _as_int(os.getenv("CRM_CHANNEL_SYNC_SCHEDULED_MAX_RETRIES"), 1))
+	results = sync_all_channels(
+		channels=target_channels,
+		limit=limit,
+		max_retries=max_retries,
+	)
+	failed_channels = [item["channel"] for item in results if item.get("status") == "failed"]
+	partial_channels = [item["channel"] for item in results if item.get("status") == "partial"]
+	return {
+		"channels": [item["channel"] for item in results],
+		"items": results,
+		"total_count": len(results),
+		"failed_channels": failed_channels,
+		"partial_channels": partial_channels,
+		"limit": limit,
+		"max_retries": max_retries,
+	}

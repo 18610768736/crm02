@@ -46,10 +46,26 @@ class TestDashboard(IntegrationTestCase):
 		frappe.db.commit()
 
 	@classmethod
+	def _reset_dashboard_test_object_cache(cls):
+		for doctype in (
+			"CRM Lead Status",
+			"CRM Deal Status",
+			"CRM Lead Source",
+			"CRM Lost Reason",
+			"CRM Organization",
+			"CRM Lead",
+			"CRM Deal",
+		):
+			frappe.local.test_objects.pop(doctype, None)
+
+	@classmethod
 	def setUpClass(cls):
 		"""Set up test records once for all tests"""
 		super().setUpClass()
+		cls._original_user = frappe.session.user
+		frappe.set_user("Administrator")
 		cls._reset_dashboard_aggregate_data()
+		cls._reset_dashboard_test_object_cache()
 
 		# Mark timestamp before creating test data
 		cls.test_start_time = frappe.utils.now()
@@ -59,20 +75,25 @@ class TestDashboard(IntegrationTestCase):
 		cls.user = "crm.manager@example.com"  # CRM manager from test_records.json
 		cls.user2_email = "crm.user1@example.com"  # Test user from test_records.json
 
-		# Load test records from test_records.json files in dependency order
-		make_test_records("CRM Lead Status")
-		make_test_records("CRM Deal Status")
-		make_test_records("CRM Lead Source")
-		make_test_records("CRM Lost Reason")
-		make_test_records("CRM Organization")  # Load organizations before deals
-		make_test_records("CRM Lead")
-		make_test_records("CRM Deal")
+		# Force fixture rebuild so this suite stays deterministic in full-module runs.
+		make_test_records("CRM Lead Status", force=True)
+		make_test_records("CRM Deal Status", force=True)
+		make_test_records("CRM Lead Source", force=True)
+		make_test_records("CRM Lost Reason", force=True)
+		make_test_records("CRM Organization", force=True)  # Load organizations before deals
+		make_test_records("CRM Lead", force=True)
+		make_test_records("CRM Deal", force=True)
 
 	@classmethod
 	def tearDownClass(cls):
 		"""Clean up test records after all tests"""
 		cls._reset_dashboard_aggregate_data()
+		frappe.set_user(cls._original_user or "Administrator")
 		super().tearDownClass()
+
+	def setUp(self):
+		super().setUp()
+		frappe.set_user("Administrator")
 
 	def test_get_total_leads(self):
 		"""Test get_total_leads returns correct lead count and delta calculation"""

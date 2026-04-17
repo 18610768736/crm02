@@ -1,10 +1,17 @@
 import json
 import os
 import time
+from unittest.mock import patch
 
 from frappe.tests import UnitTestCase
 
-from crm.api.channel_sync import ingest_event, list_sync_alerts, list_sync_cursors
+from crm.api.channel_sync import (
+	ingest_event,
+	list_sync_alerts,
+	list_sync_cursors,
+	test_channel_connection as api_test_channel_connection,
+	upsert_channel_credential,
+)
 from crm.channel_syncing.alerts import reset_sync_alerts
 from crm.channel_syncing.security import build_webhook_signature, reset_webhook_security_state
 
@@ -151,3 +158,22 @@ class TestChannelSecurity(UnitTestCase):
 		self.assertTrue(result["ok"])
 		self.assertFalse(result["security"]["required"])
 		self.assertEqual(result["security"]["reason"], "verification_optional")
+
+	def test_test_channel_connection_requires_admin_and_masks_secret(self):
+		credential = upsert_channel_credential(
+			channel="email",
+			credential_key="cred-security-email-001",
+			access_token="security-access-token-001",
+			status="Active",
+		)["credential"]
+
+		with patch("crm.api.channel_sync.frappe.only_for") as only_for:
+			result = api_test_channel_connection(
+				channel="email",
+				credential_id=credential["name"],
+			)
+
+		only_for.assert_called_once_with(["System Manager"], True)
+		self.assertTrue(result["ok"])
+		self.assertNotEqual(result["credential"]["access_token"], "security-access-token-001")
+		self.assertEqual(result["credential"]["metadata"]["last_validation_status"], "connected")

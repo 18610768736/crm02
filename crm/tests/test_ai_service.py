@@ -1,16 +1,31 @@
 import os
+from unittest.mock import MagicMock, patch
 
 from frappe.tests import UnitTestCase
 
 from crm.ai.service import build_panel_context, generate_suggestions
 
 
+def _mock_response(status: int, body: str) -> MagicMock:
+	response = MagicMock()
+	response.status = status
+	response.getcode.return_value = status
+	response.read.return_value = body.encode("utf-8")
+	response.__enter__.return_value = response
+	response.__exit__.return_value = False
+	return response
+
+
 class TestAIService(UnitTestCase):
 	def setUp(self):
 		super().setUp()
 		self._runtime_env = {
+			"OPENCLAW_RUNTIME_MODE": os.getenv("OPENCLAW_RUNTIME_MODE"),
 			"OPENCLAW_RUNTIME_REQUIRED": os.getenv("OPENCLAW_RUNTIME_REQUIRED"),
 			"OPENCLAW_RUNTIME_URL": os.getenv("OPENCLAW_RUNTIME_URL"),
+			"OPENCLAW_RUNTIME_ALLOW_SIMULATION_FALLBACK": os.getenv(
+				"OPENCLAW_RUNTIME_ALLOW_SIMULATION_FALLBACK"
+			),
 		}
 
 	def tearDown(self):
@@ -58,3 +73,26 @@ class TestAIService(UnitTestCase):
 		self.assertEqual(result["status"], "failed")
 		self.assertEqual(result["runtime"]["mode"], "required_runtime_missing")
 		self.assertEqual(result["suggestion_ids"], [])
+
+	def test_generate_suggestions_surfaces_production_readiness_failure_details(self):
+		os.environ["OPENCLAW_RUNTIME_MODE"] = "production"
+		os.environ["OPENCLAW_RUNTIME_URL"] = "https://runtime.example.com/runs"
+		os.environ["OPENCLAW_RUNTIME_ALLOW_SIMULATION_FALLBACK"] = "1"
+
+		with patch(
+			"crm.ai.agent_client.request.urlopen",
+			return_value=_mock_response(
+				503,
+				'{"status":"starting","healthy":false,"detail":"warming up"}',
+			),
+		):
+			result = generate_suggestions("CRM Lead", "LEAD-PRODUCTION-FAIL-001", channel="email")
+
+		self.assertEqual(result["status"], "failed")
+		self.assertEqual(result["runtime"]["error"]["type"], "RuntimeReadinessError")
+		self.assertEqual(result["runtime"]["readiness"]["health"]["status_code"], 503)
+		self.assertEqual(result["runtime"]["readiness"]["health"]["payload"]["detail"], "warming up")
+		self.assertEqual(
+			result["audit"]["payload"]["runtime_readiness"]["health"]["payload"]["detail"],
+			"warming up",
+		)

@@ -7,7 +7,7 @@ from crm.ai.audit import build_audit_record
 from crm.ai.lead_agent import ensure_reference_for_event
 from crm.channel_syncing.background_sync import sync_all_channels, sync_channel
 from crm.channel_syncing.alerts import emit_sync_alert, list_sync_alerts as list_stored_sync_alerts
-from crm.channel_syncing.connectors import normalize_connector_payload
+from crm.channel_syncing.connectors import normalize_connector_payload, validate_connector_connection
 from crm.channel_syncing.evidence import build_sync_evidence
 from crm.channel_syncing.evidence import build_sync_evidence_links
 from crm.channel_syncing.matcher import match_event_to_reference
@@ -81,6 +81,32 @@ def _raw_event_id(payload: dict) -> str:
 
 def _require_sync_admin() -> None:
 	frappe.only_for(["System Manager"], True)
+
+
+def _is_auth_failure(error_message: str | None) -> bool:
+	text = str(error_message or "").lower()
+	return any(
+		keyword in text
+		for keyword in ("401", "403", "unauthorized", "invalid token", "invalid credential")
+	)
+
+
+def _resolve_channel_credential(
+	channel: str,
+	credential_id: str | None = None,
+	credential_key: str | None = None,
+) -> dict:
+	if credential_id:
+		return get_channel_credential(credential_id, include_secrets=True)
+	if credential_key:
+		for credential in list_stored_channel_credentials(
+			channel=channel,
+			limit=100,
+			include_secrets=True,
+		):
+			if credential.get("credential_key") == credential_key:
+				return credential
+	raise frappe.ValidationError("Missing credential_id or credential_key for channel credential lookup.")
 
 
 @frappe.whitelist()
@@ -377,6 +403,133 @@ def run_pull_sync_all(
 		"total_count": len(results),
 		"succeeded_count": len([item for item in results if item.get("status") == "succeeded"]),
 	}
+
+
+@frappe.whitelist()
+def validate_channel_credential(
+	channel: str,
+	credential_id: str | None = None,
+	credential_key: str | None = None,
+	limit: int | str | None = 1,
+) -> dict:
+	_require_sync_admin()
+	credential = _resolve_channel_credential(
+		channel=channel,
+		credential_id=credential_id,
+		credential_key=credential_key,
+	)
+	metadata = credential.get("metadata") or {}
+	validation_limit = _coerce_limit(limit, default=1)
+	validated_at = frappe.utils.now()
+	previous_failure_count = int(credential.get("failure_count") or 0)
+
+	try:
+		result = validate_connector_connection(
+			channel=channel,
+			credential=credential,
+			limit=validation_limit,
+		)
+		updated_credential = upsert_stored_channel_credential(
+			channel=channel,
+			workspace_id=credential.get("workspace"),
+			credential_key=credential.get("credential_key"),
+			auth_type=credential.get("auth_type"),
+			base_url=credential.get("base_url"),
+			access_token=credential.get("access_token"),
+			refresh_token=credential.get("refresh_token"),
+			status="Active",
+			expires_at=credential.get("expires_at"),
+			metadata={
+				**metadata,
+				"last_validation_status": result.get("status"),
+				"last_validation_mode": result.get("mode"),
+				"last_validation_message": result.get("message"),
+				"last_validation_event_count": result.get("event_count"),
+				"last_validation_url": result.get("request_url"),
+				"last_validation_http_status_code": result.get("http_status_code"),
+				"last_error": None,
+				"last_error_kind": None,
+			},
+			last_validated_at=validated_at,
+			failure_count=0,
+		)
+		recovery_alert = None
+		if previous_failure_count > 0:
+			recovery_alert = emit_sync_alert(
+				channel=channel,
+				code="credential_validation_recovered",
+				severity="info",
+				message=f"Credential {credential.get('credential_key')} validation recovered.",
+				context={"credential_id": updated_credential["name"]},
+			)
+		return {
+			"ok": True,
+			"credential": updated_credential,
+			"result": result,
+			"alert": recovery_alert,
+		}
+	except Exception as exc:
+		error_message = str(exc)
+		auth_failure = _is_auth_failure(error_message)
+		failure_count = previous_failure_count + 1
+		updated_credential = upsert_stored_channel_credential(
+			channel=channel,
+			workspace_id=credential.get("workspace"),
+			credential_key=credential.get("credential_key"),
+			auth_type=credential.get("auth_type"),
+			base_url=credential.get("base_url"),
+			access_token=credential.get("access_token"),
+			refresh_token=credential.get("refresh_token"),
+			status="Invalid" if auth_failure else (credential.get("status") or "Active"),
+			expires_at=credential.get("expires_at"),
+			metadata={
+				**metadata,
+				"last_validation_status": "failed",
+				"last_validation_mode": metadata.get("pull_mode") or "mock",
+				"last_validation_message": error_message,
+				"last_error": error_message,
+				"last_error_kind": "auth" if auth_failure else "operational",
+			},
+			last_validated_at=validated_at,
+			failure_count=failure_count,
+		)
+		alert = emit_sync_alert(
+			channel=channel,
+			code="credential_validation_failed",
+			severity="error",
+			message=f"Credential validation failed for {credential.get('credential_key')}: {error_message}",
+			context={
+				"credential_id": updated_credential["name"],
+				"auth_failure": auth_failure,
+				"failure_count": failure_count,
+			},
+		)
+		return {
+			"ok": False,
+			"credential": updated_credential,
+			"error": error_message,
+			"result": {
+				"channel": channel,
+				"mode": metadata.get("pull_mode") or "mock",
+				"status": "failed",
+			},
+			"alert": alert,
+		}
+
+
+@frappe.whitelist()
+def test_channel_connection(
+	channel: str,
+	credential_id: str | None = None,
+	credential_key: str | None = None,
+	limit: int | str | None = 1,
+) -> dict:
+	return validate_channel_credential(
+		channel=channel,
+		credential_id=credential_id,
+		credential_key=credential_key,
+		limit=limit,
+	)
 
 
 @frappe.whitelist()

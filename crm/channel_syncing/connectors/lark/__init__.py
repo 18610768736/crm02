@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from crm.channel_syncing.connectors.http import pull_via_http, validate_via_http
+
 
 def get_connector_meta() -> dict[str, object]:
 	return {
@@ -55,6 +57,14 @@ def pull_events(
 	limit: int = 20,
 ) -> dict[str, Any]:
 	metadata = credential.get("metadata") or {}
+	if str(metadata.get("pull_mode") or "").strip().lower() == "http":
+		return pull_via_http(
+			"lark",
+			credential,
+			cursor=cursor,
+			limit=limit,
+			default_event_paths=["data.items", "data.messages"],
+		)
 	if metadata.get("force_pull_error"):
 		raise RuntimeError("lark pull failed by test flag")
 
@@ -104,4 +114,28 @@ def pull_events(
 		"next_cursor_value": str(next_sequence),
 		"status": "ok",
 		"has_more": False,
+	}
+
+
+def validate_connection(
+	credential: dict[str, Any],
+	limit: int = 1,
+) -> dict[str, Any]:
+	metadata = credential.get("metadata") or {}
+	if str(metadata.get("pull_mode") or "").strip().lower() == "http":
+		return validate_via_http(
+			"lark",
+			credential,
+			limit=limit,
+			default_event_paths=["data.items", "data.messages"],
+		)
+	if not credential.get("access_token"):
+		raise ValueError("Missing access token for lark connector.")
+	return {
+		"ok": True,
+		"channel": "lark",
+		"mode": "mock",
+		"status": "connected",
+		"event_count": 0,
+		"message": "Mock lark connector validation succeeded.",
 	}

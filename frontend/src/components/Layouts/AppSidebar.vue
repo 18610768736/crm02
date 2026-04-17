@@ -151,6 +151,7 @@
 <script setup>
 import BrushCleaningIcon from '~icons/lucide/brush-cleaning'
 import LucideLayoutDashboard from '~icons/lucide/layout-dashboard'
+import LucideServerCog from '~icons/lucide/server-cog'
 import CRMLogo from '@/components/Icons/CRMLogo.vue'
 import InviteIcon from '@/components/Icons/InviteIcon.vue'
 import ConvertIcon from '@/components/Icons/ConvertIcon.vue'
@@ -175,6 +176,7 @@ import HelpIcon from '@/components/Icons/HelpIcon.vue'
 import SidebarLink from '@/components/SidebarLink.vue'
 import Notifications from '@/components/Notifications.vue'
 import Settings from '@/components/Settings/Settings.vue'
+import SparkleIcon from '@/components/Icons/SparkleIcon.vue'
 import { viewsStore } from '@/stores/views'
 import {
   unreadNotificationsCount,
@@ -225,6 +227,12 @@ const links = [
     to: 'Leads',
   },
   {
+    label: 'Manager AI',
+    icon: SparkleIcon,
+    to: 'Manager AI',
+    condition: () => isManager(),
+  },
+  {
     label: 'Deals',
     icon: DealsIcon,
     to: 'Deals',
@@ -258,6 +266,12 @@ const links = [
     label: 'Call Logs',
     icon: PhoneIcon,
     to: 'Call Logs',
+  },
+  {
+    label: 'Channel Ops',
+    icon: LucideServerCog,
+    to: 'Channel Ops',
+    condition: () => isAdmin(),
   },
 ]
 
@@ -330,7 +344,7 @@ function getIcon(routeName, icon) {
 
 // onboarding
 const { user } = sessionStore()
-const { users, isManager } = usersStore()
+const { users, isAdmin, isManager } = usersStore()
 const { isOnboardingStepsCompleted, setUp } = useOnboarding('frappecrm')
 
 async function getFirstLead() {

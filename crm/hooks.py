@@ -191,14 +191,14 @@ scheduler_events = {
 	"daily_long": ["crm.lead_syncing.background_sync.sync_leads_from_sources_daily"],
 	"hourly_long": [
 		"crm.lead_syncing.background_sync.sync_leads_from_sources_hourly",
-		"crm.channel_syncing.background_sync.sync_all_channels",
+		"crm.channel_syncing.background_sync.run_scheduled_pull_sync",
 	],
 	"monthly_long": ["crm.lead_syncing.background_sync.sync_leads_from_sources_monthly"],
 	"cron": {
 		"*/5 * * * *": ["crm.lead_syncing.background_sync.sync_leads_from_sources_5_minutes"],
 		"*/10 * * * *": ["crm.lead_syncing.background_sync.sync_leads_from_sources_10_minutes"],
 		"*/15 * * * *": ["crm.lead_syncing.background_sync.sync_leads_from_sources_15_minutes"],
-		"*/30 * * * *": ["crm.channel_syncing.background_sync.sync_all_channels"],
+		"*/30 * * * *": ["crm.channel_syncing.background_sync.run_scheduled_pull_sync"],
 	},
 }
 

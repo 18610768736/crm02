@@ -50,7 +50,9 @@ def generate_suggestions(
 				"context_type": context_type,
 				"runtime_status": runtime_result.get("status"),
 				"runtime_mode": runtime_result.get("mode"),
+				"runtime_error_type": (runtime_result.get("error") or {}).get("type"),
 				"runtime_error": runtime_result.get("error"),
+				"runtime_readiness": runtime_result.get("readiness"),
 			},
 		)
 		stored_audit = persist_audit_log(audit)

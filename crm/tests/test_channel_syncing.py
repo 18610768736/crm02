@@ -1,5 +1,9 @@
+import os
+from unittest.mock import patch
+
 from frappe.tests import UnitTestCase
 
+import crm.hooks
 from crm.api.channel_sync import (
 	get_channel_workspace_detail,
 	get_conversation_thread_detail,
@@ -16,7 +20,7 @@ from crm.api.channel_sync import (
 	list_touchpoints,
 )
 from crm.channel_syncing.connectors import normalize_connector_payload
-from crm.channel_syncing.background_sync import sync_all_channels
+from crm.channel_syncing.background_sync import run_scheduled_pull_sync, sync_all_channels
 from crm.channel_syncing.normalizer import normalize_event
 
 
@@ -271,3 +275,36 @@ class TestChannelSyncing(UnitTestCase):
 
 		self.assertEqual(len(result), 3)
 		self.assertEqual([item["channel"] for item in result], ["qywx", "lark", "email"])
+
+	def test_run_scheduled_pull_sync_uses_scheduler_config_and_hook_entry(self):
+		with (
+			patch.dict(
+				os.environ,
+				{
+					"CRM_CHANNEL_SYNC_SCHEDULED_CHANNELS": "email,lark",
+					"CRM_CHANNEL_SYNC_SCHEDULED_LIMIT": "5",
+					"CRM_CHANNEL_SYNC_SCHEDULED_MAX_RETRIES": "2",
+				},
+				clear=False,
+			),
+			patch(
+				"crm.channel_syncing.background_sync.sync_all_channels",
+				return_value=[
+					{"channel": "email", "status": "failed"},
+					{"channel": "lark", "status": "partial"},
+				],
+			) as sync_mock,
+		):
+			result = run_scheduled_pull_sync()
+
+		sync_mock.assert_called_once_with(channels=["email", "lark"], limit=5, max_retries=2)
+		self.assertEqual(result["failed_channels"], ["email"])
+		self.assertEqual(result["partial_channels"], ["lark"])
+		self.assertIn(
+			"crm.channel_syncing.background_sync.run_scheduled_pull_sync",
+			crm.hooks.scheduler_events["hourly_long"],
+		)
+		self.assertEqual(
+			crm.hooks.scheduler_events["cron"]["*/30 * * * *"],
+			["crm.channel_syncing.background_sync.run_scheduled_pull_sync"],
+		)

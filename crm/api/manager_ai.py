@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import frappe
@@ -27,6 +27,14 @@ def _parse_datetime(value: str | None) -> datetime | None:
 		return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 	except ValueError:
 		return None
+
+
+def _to_utc_naive(value: datetime | None) -> datetime | None:
+	if value is None:
+		return None
+	if value.tzinfo is not None:
+		return value.astimezone(timezone.utc).replace(tzinfo=None)
+	return value
 
 
 def _query_high_risk_suggestions(limit: int) -> list[dict[str, Any]]:
@@ -89,7 +97,7 @@ def _query_stale_threads(stale_days: int, limit: int) -> list[dict[str, Any]]:
 	threshold = datetime.utcnow() - timedelta(days=max(stale_days, 1))
 	stale_threads: list[dict[str, Any]] = []
 	for thread in threads:
-		last_touchpoint = _parse_datetime(thread.get("last_touchpoint_at"))
+		last_touchpoint = _to_utc_naive(_parse_datetime(thread.get("last_touchpoint_at")))
 		if last_touchpoint is None or last_touchpoint <= threshold:
 			stale_threads.append(thread)
 	stale_threads.sort(key=lambda item: str(item.get("last_touchpoint_at") or ""))
@@ -122,4 +130,3 @@ def get_manager_overview(
 			"deals_without_next_step_count": len(deals_without_next_step),
 		},
 	}
-

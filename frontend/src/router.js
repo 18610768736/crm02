@@ -19,6 +19,18 @@ const routes = [
     component: () => import('@/pages/Dashboard.vue'),
   },
   {
+    path: '/manager-ai',
+    name: 'Manager AI',
+    component: () => import('@/pages/ManagerAI.vue'),
+    meta: { requiresManager: true },
+  },
+  {
+    path: '/channel-ops',
+    name: 'Channel Ops',
+    component: () => import('@/pages/ChannelOps.vue'),
+    meta: { requiresAdmin: true },
+  },
+  {
     alias: '/leads',
     path: '/leads/view/:viewType?',
     name: 'Leads',
@@ -136,7 +148,7 @@ router.beforeEach(async (to, from, next) => {
   router.previousRoute = from
 
   const { isLoggedIn } = sessionStore()
-  const { users, isCrmUser } = usersStore()
+  const { users, isAdmin, isManager, isCrmUser } = usersStore()
 
   if (isLoggedIn && !users.fetched) {
     try {
@@ -147,6 +159,10 @@ router.beforeEach(async (to, from, next) => {
   }
 
   if (isLoggedIn && to.name !== 'Not Permitted' && !isCrmUser()) {
+    next({ name: 'Not Permitted' })
+  } else if (to.meta?.requiresAdmin && !isAdmin()) {
+    next({ name: 'Not Permitted' })
+  } else if (to.meta?.requiresManager && !isManager()) {
     next({ name: 'Not Permitted' })
   } else if (to.name === 'Home' && isLoggedIn) {
     const { views, getDefaultView } = viewsStore()

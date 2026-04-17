@@ -92,7 +92,9 @@ import {
 } from '@headlessui/vue'
 import CollapsibleSection from '@/components/CollapsibleSection.vue'
 import PinIcon from '@/components/Icons/PinIcon.vue'
+import SparkleIcon from '@/components/Icons/SparkleIcon.vue'
 import UserDropdown from '@/components/UserDropdown.vue'
+import LucideServerCog from '~icons/lucide/server-cog'
 import LeadsIcon from '@/components/Icons/LeadsIcon.vue'
 import DealsIcon from '@/components/Icons/DealsIcon.vue'
 import ContactsIcon from '@/components/Icons/ContactsIcon.vue'
@@ -104,16 +106,24 @@ import NotificationsIcon from '@/components/Icons/NotificationsIcon.vue'
 import SidebarLink from '@/components/SidebarLink.vue'
 import { viewsStore } from '@/stores/views'
 import { unreadNotificationsCount } from '@/stores/notifications'
+import { usersStore } from '@/stores/users'
 import { computed, h } from 'vue'
 import { mobileSidebarOpened as sidebarOpened } from '@/composables/settings'
 
 const { getPinnedViews, getPublicViews } = viewsStore()
+const { isAdmin, isManager } = usersStore()
 
 const links = [
   {
     label: 'Leads',
     icon: LeadsIcon,
     to: 'Leads',
+  },
+  {
+    label: 'Manager AI',
+    icon: SparkleIcon,
+    to: 'Manager AI',
+    condition: () => isManager(),
   },
   {
     label: 'Deals',
@@ -145,6 +155,12 @@ const links = [
     icon: PhoneIcon,
     to: 'Call Logs',
   },
+  {
+    label: 'Channel Ops',
+    icon: LucideServerCog,
+    to: 'Channel Ops',
+    condition: () => isAdmin(),
+  },
 ]
 
 const allViews = computed(() => {
@@ -153,7 +169,12 @@ const allViews = computed(() => {
       name: 'All Views',
       hideLabel: true,
       opened: true,
-      views: links,
+      views: links.filter((link) => {
+        if (link.condition) {
+          return link.condition()
+        }
+        return true
+      }),
     },
   ]
   if (getPublicViews().length) {
