@@ -464,22 +464,35 @@ def upsert_channel_credential(
 	if _doc_type_available(CHANNEL_CREDENTIAL_DOCTYPE):
 		name = frappe.db.exists(CHANNEL_CREDENTIAL_DOCTYPE, filters)
 		if name:
+			frappe.db.set_value(CHANNEL_CREDENTIAL_DOCTYPE, name, payload, update_modified=True)
 			doc = frappe.get_doc(CHANNEL_CREDENTIAL_DOCTYPE, name)
-			doc.update(payload)
 			if access_token is not None:
 				doc.access_token = access_token
 			if refresh_token is not None:
 				doc.refresh_token = refresh_token
 			doc.save(ignore_permissions=True)
-			record = _credential_record_from_doc(doc.name)
+			record = _credential_record_from_doc(name)
 		else:
-			doc = frappe.get_doc({"doctype": CHANNEL_CREDENTIAL_DOCTYPE, **payload})
-			if access_token is not None:
-				doc.access_token = access_token
-			if refresh_token is not None:
-				doc.refresh_token = refresh_token
-			doc.insert(ignore_permissions=True)
-			record = _credential_record_from_doc(doc.name)
+			try:
+				doc = frappe.get_doc({"doctype": CHANNEL_CREDENTIAL_DOCTYPE, **payload})
+				if access_token is not None:
+					doc.access_token = access_token
+				if refresh_token is not None:
+					doc.refresh_token = refresh_token
+				doc.insert(ignore_permissions=True)
+				record = _credential_record_from_doc(doc.name)
+			except Exception:
+				existing_name = frappe.db.exists(CHANNEL_CREDENTIAL_DOCTYPE, filters)
+				if not existing_name:
+					raise
+				frappe.db.set_value(CHANNEL_CREDENTIAL_DOCTYPE, existing_name, payload, update_modified=True)
+				doc = frappe.get_doc(CHANNEL_CREDENTIAL_DOCTYPE, existing_name)
+				if access_token is not None:
+					doc.access_token = access_token
+				if refresh_token is not None:
+					doc.refresh_token = refresh_token
+				doc.save(ignore_permissions=True)
+				record = _credential_record_from_doc(existing_name)
 		return _to_channel_credential_detail(record)
 
 	volatile_payload = {
@@ -584,22 +597,61 @@ def persist_conversation_thread(
 	):
 		name = frappe.db.exists(CONVERSATION_THREAD_DOCTYPE, filters)
 		if name:
-			doc = frappe.get_doc(CONVERSATION_THREAD_DOCTYPE, name)
-			current_count = int(doc.get("touchpoint_count") or 0)
-			doc.update(
-				{
-					**payload,
-					"status": _resolve_thread_status(normalized_event, current_status=doc.get("status")),
-					"touchpoint_count": current_count + 1,
-				}
+			current = frappe.db.get_value(
+				CONVERSATION_THREAD_DOCTYPE,
+				name,
+				["status", "touchpoint_count", "last_touchpoint_at"],
+				as_dict=True,
+			) or {}
+			last_touchpoint_at = payload["last_touchpoint_at"] or current.get("last_touchpoint_at")
+			update_payload = {
+				**payload,
+				"status": _resolve_thread_status(normalized_event, current_status=current.get("status")),
+				"touchpoint_count": int(current.get("touchpoint_count") or 0) + 1,
+				"last_touchpoint_at": last_touchpoint_at,
+			}
+			frappe.db.set_value(CONVERSATION_THREAD_DOCTYPE, name, update_payload, update_modified=True)
+			record = frappe.db.get_value(
+				CONVERSATION_THREAD_DOCTYPE,
+				name,
+				_conversation_thread_fields(),
+				as_dict=True,
 			)
-			if not payload["last_touchpoint_at"]:
-				doc.last_touchpoint_at = doc.get("last_touchpoint_at")
-			doc.save(ignore_permissions=True)
 		else:
-			doc = frappe.get_doc({"doctype": CONVERSATION_THREAD_DOCTYPE, **payload})
-			doc.insert(ignore_permissions=True)
-		return _to_conversation_thread_detail(doc.as_dict())
+			try:
+				doc = frappe.get_doc({"doctype": CONVERSATION_THREAD_DOCTYPE, **payload})
+				doc.insert(ignore_permissions=True)
+				record = doc.as_dict()
+			except Exception:
+				existing_name = frappe.db.exists(CONVERSATION_THREAD_DOCTYPE, filters)
+				if not existing_name:
+					raise
+				current = frappe.db.get_value(
+					CONVERSATION_THREAD_DOCTYPE,
+					existing_name,
+					["status", "touchpoint_count", "last_touchpoint_at"],
+					as_dict=True,
+				) or {}
+				last_touchpoint_at = payload["last_touchpoint_at"] or current.get("last_touchpoint_at")
+				update_payload = {
+					**payload,
+					"status": _resolve_thread_status(normalized_event, current_status=current.get("status")),
+					"touchpoint_count": int(current.get("touchpoint_count") or 0) + 1,
+					"last_touchpoint_at": last_touchpoint_at,
+				}
+				frappe.db.set_value(
+					CONVERSATION_THREAD_DOCTYPE,
+					existing_name,
+					update_payload,
+					update_modified=True,
+				)
+				record = frappe.db.get_value(
+					CONVERSATION_THREAD_DOCTYPE,
+					existing_name,
+					_conversation_thread_fields(),
+					as_dict=True,
+				)
+		return _to_conversation_thread_detail(record)
 
 	existing = next(
 		(

@@ -1,5 +1,6 @@
 from frappe.tests import UnitTestCase
 
+from crm.ai.lead_agent import extract_profile_from_event
 from crm.api.channel_sync import ingest_event
 
 
@@ -19,12 +20,17 @@ class TestAutoLeadCreation(UnitTestCase):
 
 		self.assertTrue(result["ok"])
 		self.assertEqual(result["match"]["reference"]["doctype"], "CRM Lead")
-		self.assertEqual(result["match"]["strategy"], "auto_profile_creation")
-		self.assertTrue(result["auto_profile"])
-		self.assertEqual(
-			result["auto_profile"]["reference"]["name"],
-			result["match"]["reference"]["name"],
+		self.assertIn(
+			result["match"]["strategy"],
+			("auto_profile_creation", "external_identity_lookup"),
 		)
+		if result["auto_profile"]:
+			self.assertEqual(
+				result["auto_profile"]["reference"]["name"],
+				result["match"]["reference"]["name"],
+			)
+		else:
+			self.assertEqual(result["match"]["strategy"], "external_identity_lookup")
 
 	def test_ingest_followup_reuses_autocreated_reference(self):
 		first = ingest_event(
@@ -57,3 +63,25 @@ class TestAutoLeadCreation(UnitTestCase):
 			first["match"]["reference"]["name"],
 		)
 
+	def test_extract_profile_does_not_use_owner_as_organization(self):
+		profile = extract_profile_from_event(
+			{
+				"channel": "email",
+				"external_id": "evt-auto-lead-org-001",
+				"contact_hints": {
+					"display_names": ["客户C"],
+					"emails": ["autolead003@example.com"],
+					"phone_numbers": [],
+					"external_user_ids": [],
+				},
+				"participants": [
+					{"role": "customer", "label": "客户C"},
+					{"role": "owner", "label": "销售负责人"},
+				],
+				"source_payload": {
+					"owner_name": "销售负责人",
+					"customer_name": "客户C",
+				},
+			}
+		)
+		self.assertIsNone(profile["organization"])

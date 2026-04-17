@@ -42,9 +42,11 @@ class TestChannelPullSync(UnitTestCase):
 		self.assertGreaterEqual(list_payload["total_count"], 1)
 		self.assertTrue(any(item["name"] == credential_id for item in list_payload["items"]))
 
-		detail = get_channel_credential_detail(credential_id, include_secrets=1)
-		self.assertEqual(detail["access_token"], "access-token-crud-001")
-		self.assertEqual(detail["refresh_token"], "refresh-token-crud-001")
+		detail = get_channel_credential_detail(credential_id)
+		self.assertNotEqual(detail["access_token"], "access-token-crud-001")
+		self.assertNotEqual(detail["refresh_token"], "refresh-token-crud-001")
+		self.assertTrue(detail["has_access_token"])
+		self.assertTrue(detail["has_refresh_token"])
 
 	def test_run_pull_sync_succeeds_and_updates_cursor(self):
 		credential = upsert_channel_credential(
@@ -130,4 +132,3 @@ class TestChannelPullSync(UnitTestCase):
 		self.assertEqual(first_item["cursor_key"], second_item["cursor_key"])
 		self.assertEqual(first_item["cursor_id"], second_item["cursor_id"])
 		self.assertGreater(int(second_item["cursor_value"]), int(first_item["cursor_value"]))
-

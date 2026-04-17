@@ -33,6 +33,42 @@ def generate_suggestions(
 	job = build_job_stub(reference_doctype, reference_name)
 	approval = build_approval_request(reference_doctype, reference_name, channel=channel)
 	evidence = build_evidence_packet(panel_context)
+	if runtime_result.get("status") != "succeeded":
+		audit = build_audit_record(
+			reference_doctype,
+			reference_name,
+			"generate_suggestions",
+			"Failed",
+			source_type="ai_service",
+			source_ref=job["job_id"],
+			provider=agent_request.get("provider"),
+			job_id=job["job_id"],
+			risk_level="High",
+			message="Runtime execution failed before suggestion generation.",
+			payload={
+				"channel": channel,
+				"context_type": context_type,
+				"runtime_status": runtime_result.get("status"),
+				"runtime_mode": runtime_result.get("mode"),
+				"runtime_error": runtime_result.get("error"),
+			},
+		)
+		stored_audit = persist_audit_log(audit)
+		return {
+			"status": "failed",
+			"reference": panel_context["reference"],
+			"job": job,
+			"agent_request": agent_request,
+			"approval": approval,
+			"runtime": runtime_result,
+			"evidence": evidence,
+			"suggestions": [],
+			"suggestion_ids": [],
+			"audit_id": stored_audit["name"],
+			"evidence_ids": [],
+			"audit": stored_audit,
+			"error": runtime_result.get("error"),
+		}
 	suggestions = build_suggestion_cards(reference_doctype, reference_name, channel=channel)
 	stored_suggestions = persist_suggestions(
 		reference_doctype,

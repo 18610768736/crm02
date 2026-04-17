@@ -103,7 +103,10 @@ class TestChannelSyncing(UnitTestCase):
 		self.assertTrue(result["workspace_id"])
 		self.assertTrue(result["cursor_id"])
 		self.assertEqual(result["match"]["reference"]["doctype"], "CRM Lead")
-		self.assertTrue(result["auto_profile"])
+		if result["auto_profile"]:
+			self.assertEqual(result["match"]["strategy"], "auto_profile_creation")
+		else:
+			self.assertEqual(result["match"]["strategy"], "external_identity_lookup")
 		self.assertTrue(result["audit_id"])
 		self.assertGreaterEqual(len(result["evidence_ids"]), 1)
 

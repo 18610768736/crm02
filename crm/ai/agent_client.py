@@ -65,9 +65,20 @@ def _runtime_health_url(runtime_url: str | None) -> str | None:
 	if not runtime_url:
 		return None
 	parsed = urlparse(runtime_url)
-	health_path = "/health"
-	if parsed.path and parsed.path.endswith("/health"):
-		health_path = parsed.path
+	path = (parsed.path or "").rstrip("/")
+	if not path:
+		health_path = "/health"
+	elif path.endswith("/health"):
+		health_path = path
+	else:
+		segments = [segment for segment in path.split("/") if segment]
+		if not segments:
+			health_path = "/health"
+		elif segments[-1] in {"runs", "run", "execute", "invoke", "chat", "completions", "responses"}:
+			prefix = "/" + "/".join(segments[:-1]) if segments[:-1] else ""
+			health_path = f"{prefix}/health" if prefix else "/health"
+		else:
+			health_path = f"/{'/'.join(segments)}/health"
 	return urlunparse((parsed.scheme, parsed.netloc, health_path, "", "", ""))
 
 

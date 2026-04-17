@@ -1,9 +1,26 @@
+import os
+
 from frappe.tests import UnitTestCase
 
 from crm.ai.service import build_panel_context, generate_suggestions
 
 
 class TestAIService(UnitTestCase):
+	def setUp(self):
+		super().setUp()
+		self._runtime_env = {
+			"OPENCLAW_RUNTIME_REQUIRED": os.getenv("OPENCLAW_RUNTIME_REQUIRED"),
+			"OPENCLAW_RUNTIME_URL": os.getenv("OPENCLAW_RUNTIME_URL"),
+		}
+
+	def tearDown(self):
+		for key, value in self._runtime_env.items():
+			if value is None:
+				os.environ.pop(key, None)
+			else:
+				os.environ[key] = value
+		super().tearDown()
+
 	def test_build_panel_context_returns_minimum_panel_shape(self):
 		result = build_panel_context("CRM Deal", "DEAL-0001")
 
@@ -32,3 +49,12 @@ class TestAIService(UnitTestCase):
 		self.assertGreaterEqual(len(result["suggestions"]), 2)
 		self.assertTrue(result["audit_id"])
 		self.assertGreaterEqual(len(result["evidence_ids"]), 1)
+
+	def test_generate_suggestions_fails_when_runtime_required_but_unavailable(self):
+		os.environ["OPENCLAW_RUNTIME_REQUIRED"] = "1"
+		os.environ.pop("OPENCLAW_RUNTIME_URL", None)
+
+		result = generate_suggestions("CRM Lead", "LEAD-RUNTIME-FAIL-001", channel="email")
+		self.assertEqual(result["status"], "failed")
+		self.assertEqual(result["runtime"]["mode"], "required_runtime_missing")
+		self.assertEqual(result["suggestion_ids"], [])

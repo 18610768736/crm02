@@ -45,12 +45,14 @@ def extract_profile_from_event(normalized_event: dict[str, Any]) -> dict[str, An
 	phones = contact_hints.get("phone_numbers") or []
 	external_user_ids = contact_hints.get("external_user_ids") or []
 	display_name = display_names[0] if display_names else None
-	participants = normalized_event.get("participants") or []
-	organization = None
-	for participant in participants:
-		if participant.get("role") == "owner":
-			organization = participant.get("label")
-			break
+	source_payload = normalized_event.get("source_payload") or {}
+	organization = (
+		source_payload.get("organization")
+		or source_payload.get("organization_name")
+		or source_payload.get("company_name")
+		or source_payload.get("customer_company")
+		or source_payload.get("account_name")
+	)
 	return {
 		"display_name": display_name,
 		"summary": (normalized_event.get("content") or {}).get("summary"),
@@ -237,4 +239,3 @@ def ensure_reference_for_event(
 		"created": created,
 		"reference": reference,
 	}
-

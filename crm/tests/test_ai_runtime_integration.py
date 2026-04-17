@@ -61,6 +61,18 @@ class TestAIRuntimeIntegration(UnitTestCase):
 		self.assertTrue(health["healthy"])
 		self.assertEqual(health["reason"], "ok")
 		self.assertEqual(health["mode"], "openclaw_http")
+		self.assertEqual(health["health_url"], "https://runtime.example.com/health")
+
+	def test_check_runtime_health_keeps_path_prefix_when_deriving_health_url(self):
+		os.environ["OPENCLAW_RUNTIME_URL"] = "https://runtime.example.com/openclaw/runs"
+
+		with patch(
+			"crm.ai.agent_client.request.urlopen",
+			return_value=_mock_response(200, '{"status":"ok","healthy":true}'),
+		):
+			health = check_runtime_health()
+
+		self.assertEqual(health["health_url"], "https://runtime.example.com/openclaw/health")
 
 	def test_run_runtime_smoke_test_uses_http_runtime(self):
 		os.environ["OPENCLAW_RUNTIME_URL"] = "https://runtime.example.com/runs"
@@ -100,4 +112,3 @@ class TestAIRuntimeIntegration(UnitTestCase):
 		self.assertEqual(result["status"], "failed")
 		self.assertNotEqual(result.get("mode"), "simulation_fallback")
 		self.assertIn("runtime unreachable", result["error"]["message"])
-

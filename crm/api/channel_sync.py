@@ -79,6 +79,10 @@ def _raw_event_id(payload: dict) -> str:
 	)
 
 
+def _require_sync_admin() -> None:
+	frappe.only_for(["System Manager"], True)
+
+
 @frappe.whitelist()
 def ingest_event(
 	channel: str,
@@ -254,6 +258,7 @@ def upsert_channel_credential(
 	expires_at: str | None = None,
 	metadata: dict | str | None = None,
 ) -> dict:
+	_require_sync_admin()
 	credential = upsert_stored_channel_credential(
 		channel=channel,
 		workspace_id=workspace_id,
@@ -275,14 +280,14 @@ def list_channel_credentials(
 	workspace_id: str | None = None,
 	status: str | None = None,
 	limit: int | str | None = 20,
-	include_secrets: bool | int | str | None = None,
 ) -> dict:
+	_require_sync_admin()
 	items = list_stored_channel_credentials(
 		channel=channel,
 		workspace_id=workspace_id,
 		status=status,
 		limit=_coerce_limit(limit),
-		include_secrets=bool(_coerce_bool(include_secrets)),
+		include_secrets=False,
 	)
 	return {
 		"filters": {
@@ -298,9 +303,9 @@ def list_channel_credentials(
 @frappe.whitelist()
 def get_channel_credential_detail(
 	credential_id: str,
-	include_secrets: bool | int | str | None = None,
 ) -> dict:
-	return get_channel_credential(credential_id, include_secrets=bool(_coerce_bool(include_secrets)))
+	_require_sync_admin()
+	return get_channel_credential(credential_id, include_secrets=False)
 
 
 @frappe.whitelist()
@@ -341,6 +346,7 @@ def run_pull_sync(
 	limit: int | str | None = 20,
 	max_retries: int | str | None = 1,
 ) -> dict:
+	_require_sync_admin()
 	return sync_channel(
 		channel=channel,
 		credential_id=credential_id,
@@ -357,6 +363,7 @@ def run_pull_sync_all(
 	limit: int | str | None = 20,
 	max_retries: int | str | None = 1,
 ) -> dict:
+	_require_sync_admin()
 	target_channels = channels
 	if isinstance(channels, str):
 		target_channels = [item.strip() for item in channels.split(",") if item.strip()]

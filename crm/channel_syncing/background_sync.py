@@ -24,6 +24,11 @@ def _ingest_pulled_event(channel: str, payload: dict[str, Any]) -> dict[str, Any
 	return ingest_event(channel, payload, verify_signature=0)
 
 
+def _is_auth_failure(error_message: str | None) -> bool:
+	text = str(error_message or "").lower()
+	return any(keyword in text for keyword in ("401", "403", "unauthorized", "invalid token", "invalid credential"))
+
+
 def _sync_single_credential(
 	channel: str,
 	credential: dict[str, Any],
@@ -110,6 +115,7 @@ def _sync_single_credential(
 		except Exception as exc:  # pragma: no cover - defensive fallback
 			last_error = str(exc)
 			final_failure = attempt > max_retries
+			auth_failure = _is_auth_failure(last_error)
 			stored_cursor = upsert_sync_cursor(
 				channel=channel,
 				workspace_id=credential.get("workspace"),
@@ -132,13 +138,18 @@ def _sync_single_credential(
 				base_url=credential.get("base_url"),
 				access_token=credential.get("access_token"),
 				refresh_token=credential.get("refresh_token"),
-				status="Invalid" if final_failure else (credential.get("status") or "Active"),
+				status=(
+					"Invalid"
+					if final_failure and auth_failure
+					else (credential.get("status") or "Active")
+				),
 				expires_at=credential.get("expires_at"),
 				metadata={
 					**metadata,
 					"last_cursor_key": target_cursor_key,
 					"last_cursor_value": target_cursor_value,
 					"last_error": last_error,
+					"last_error_kind": "auth" if auth_failure else "operational",
 				},
 				failure_count=attempt,
 			)
