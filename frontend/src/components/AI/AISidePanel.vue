@@ -4,13 +4,29 @@
       <div class="truncate text-base font-semibold text-ink-gray-9">
         {{ __('AI Copilot') }}
       </div>
-      <Button
-        :label="__('Generate')"
-        size="sm"
-        variant="solid"
-        :loading="generateSuggestion.loading"
-        @click="generate"
-      />
+      <div class="flex items-center gap-1">
+        <Button
+          :label="showEvidenceDetails ? __('Hide Evidence') : __('View Evidence')"
+          size="sm"
+          variant="ghost"
+          @click="toggleEvidenceDetails"
+        />
+        <Button
+          :label="__('Approve')"
+          size="sm"
+          variant="subtle"
+          :disabled="!approvableSuggestionId"
+          :loading="isApproving"
+          @click="approveLatestSuggestion"
+        />
+        <Button
+          :label="__('Generate')"
+          size="sm"
+          variant="solid"
+          :loading="generateSuggestion.loading"
+          @click="generate"
+        />
+      </div>
     </div>
 
     <div
@@ -123,6 +139,9 @@
             <div class="mt-1 text-xs text-ink-gray-5">
               {{ __('Risk') }}: {{ __(item.risk_level || 'Medium') }}
             </div>
+            <div class="mt-1 text-xs text-ink-gray-5">
+              {{ __('Status') }}: {{ __(item.status || 'Open') }}
+            </div>
           </div>
         </div>
       </div>
@@ -141,13 +160,76 @@
           </div>
         </div>
       </div>
+
+      <div
+        v-if="showEvidenceDetails"
+        class="space-y-3 rounded-md border border-outline-gray-2 bg-surface-gray-1 p-3"
+      >
+        <div>
+          <div class="mb-1 text-xs font-medium text-ink-gray-6">
+            {{ __('Evidence Details') }} ({{ evidenceItems.length }})
+          </div>
+          <div
+            v-if="!evidenceItems.length"
+            class="rounded-md border border-dashed border-outline-gray-2 p-2 text-xs text-ink-gray-5"
+          >
+            {{ __('No evidence details available yet.') }}
+          </div>
+          <div v-else class="space-y-2">
+            <div
+              v-for="item in evidenceItems"
+              :key="item.name"
+              class="rounded-md border border-outline-gray-2 p-2"
+            >
+              <div class="text-sm font-medium text-ink-gray-8">
+                {{ item.title || __('Evidence') }}
+              </div>
+              <div class="mt-1 line-clamp-2 text-xs text-ink-gray-6">
+                {{ item.summary || __('No summary') }}
+              </div>
+              <div class="mt-1 text-xs text-ink-gray-5">
+                {{ __('Source') }}: {{ item.source_type || __('unknown') }}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="mb-1 text-xs font-medium text-ink-gray-6">
+            {{ __('Approval Audit') }} ({{ auditItems.length }})
+          </div>
+          <div
+            v-if="!auditItems.length"
+            class="rounded-md border border-dashed border-outline-gray-2 p-2 text-xs text-ink-gray-5"
+          >
+            {{ __('No audit logs available yet.') }}
+          </div>
+          <div v-else class="space-y-2">
+            <div
+              v-for="item in auditItems"
+              :key="item.name"
+              class="rounded-md border border-outline-gray-2 p-2"
+            >
+              <div class="text-sm font-medium text-ink-gray-8">
+                {{ __(item.action || 'audit') }}
+              </div>
+              <div class="mt-1 text-xs text-ink-gray-6">
+                {{ __('Status') }}: {{ __(item.status || 'Queued') }}
+              </div>
+              <div class="mt-1 line-clamp-2 text-xs text-ink-gray-5">
+                {{ item.message || __('No details') }}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
-import { Button, createResource, toast } from 'frappe-ui'
+import { computed, ref } from 'vue'
+import { Button, call, createResource, toast } from 'frappe-ui'
 
 const props = defineProps({
   referenceDoctype: { type: String, required: true },
@@ -254,6 +336,8 @@ const compileCustomerMemory = createResource({
 })
 
 const suggestionItems = computed(() => suggestions.data?.items || [])
+const evidenceItems = computed(() => evidenceLinks.data?.items || [])
+const auditItems = computed(() => auditLogs.data?.items || [])
 const evidenceCount = computed(() => evidenceLinks.data?.total_count || 0)
 const auditCount = computed(() => auditLogs.data?.total_count || 0)
 const customerMemorySummary = computed(() => customerMemory.data?.summary || '')
@@ -270,6 +354,12 @@ const latestSummary = computed(() => {
   }
   return ''
 })
+const showEvidenceDetails = ref(false)
+const isApproving = ref(false)
+const approvableSuggestionId = computed(() => {
+  const next = suggestionItems.value.find((item) => item?.status === 'Open')
+  return next?.name || ''
+})
 
 async function refresh() {
   await Promise.all([
@@ -281,11 +371,37 @@ async function refresh() {
   ])
 }
 
+async function approveLatestSuggestion() {
+  if (!approvableSuggestionId.value || isApproving.value) return
+
+  isApproving.value = true
+  try {
+    await call('crm.api.ai.approve_suggestion', {
+      suggestion_id: approvableSuggestionId.value,
+      decision: 'Accepted',
+    })
+    toast.success(__('Suggestion approved'))
+    await refresh()
+  } catch (error) {
+    toast.error(error?.messages?.[0] || __('Failed to approve suggestion'))
+  } finally {
+    isApproving.value = false
+  }
+}
+
 function generate() {
   generateSuggestion.submit()
 }
 
 function compileMemory() {
   compileCustomerMemory.submit()
+}
+
+function toggleEvidenceDetails() {
+  showEvidenceDetails.value = !showEvidenceDetails.value
+  if (showEvidenceDetails.value) {
+    evidenceLinks.reload()
+    auditLogs.reload()
+  }
 }
 </script>

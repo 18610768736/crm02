@@ -207,6 +207,43 @@ def get_suggestion(suggestion_id: str) -> dict[str, Any]:
 	return _to_suggestion_detail(record)
 
 
+def update_suggestion_status(
+	suggestion_id: str,
+	status: str,
+	review_note: str | None = None,
+) -> dict[str, Any]:
+	if _doc_type_available(AI_SUGGESTION_DOCTYPE) and frappe.db.exists(
+		AI_SUGGESTION_DOCTYPE, suggestion_id
+	):
+		doc = frappe.get_doc(AI_SUGGESTION_DOCTYPE, suggestion_id)
+		doc.status = status
+		action_payload = _json_loads(doc.action_payload_json)
+		action_payload.update(
+			{
+				"approval_decision": status,
+				"approval_note": review_note or "",
+				"approved_at": _now(),
+			}
+		)
+		doc.action_payload_json = _json_dumps(action_payload)
+		doc.save(ignore_permissions=True)
+		return _to_suggestion_detail(doc.as_dict())
+
+	record = _VOLATILE_SUGGESTIONS[suggestion_id]
+	record["status"] = status
+	action_payload = _json_loads(record.get("action_payload_json"))
+	action_payload.update(
+		{
+			"approval_decision": status,
+			"approval_note": review_note or "",
+			"approved_at": _now(),
+		}
+	)
+	record["action_payload_json"] = _json_dumps(action_payload)
+	_VOLATILE_SUGGESTIONS[suggestion_id] = deepcopy(record)
+	return _to_suggestion_detail(_VOLATILE_SUGGESTIONS[suggestion_id])
+
+
 def _infer_suggestion_type(suggestion: dict[str, Any]) -> str:
 	key = str(suggestion.get("key") or "")
 	if "draft" in key or suggestion.get("channel") in {"email", "qywx", "lark", "dingtalk"}:

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 from frappe.tests import UnitTestCase
 
 from crm.api.ai import (
+	approve_suggestion,
 	compile_customer_memory,
 	generate_suggestions,
 	get_customer_memory,
@@ -99,6 +100,39 @@ class TestAIAPI(UnitTestCase):
 		evidence_payload = list_evidence_links("CRM Deal", "DEAL-0003")
 		self.assertGreaterEqual(evidence_payload["total_count"], 1)
 		self.assertEqual(evidence_payload["items"][0]["reference"]["name"], "DEAL-0003")
+
+	def test_approve_suggestion_updates_status_and_writes_audit_log(self):
+		result = generate_suggestions(
+			"CRM Deal",
+			"DEAL-0004",
+			channel="email",
+			prompt="请给出下一步推进建议",
+		)
+		suggestion_id = result["suggestion_ids"][0]
+
+		approval = approve_suggestion(
+			suggestion_id=suggestion_id,
+			decision="Accepted",
+			note="已人工复核并同意执行",
+		)
+
+		self.assertEqual(approval["status"], "ok")
+		self.assertEqual(approval["decision"], "Accepted")
+		self.assertEqual(approval["suggestion"]["name"], suggestion_id)
+		self.assertEqual(approval["suggestion"]["status"], "Accepted")
+		self.assertEqual(
+			approval["suggestion"]["action_payload"]["approval_note"],
+			"已人工复核并同意执行",
+		)
+
+		detail = get_suggestion_detail(suggestion_id)
+		self.assertEqual(detail["status"], "Accepted")
+
+		audit_payload = list_audit_logs("CRM Deal", "DEAL-0004")
+		self.assertGreaterEqual(audit_payload["total_count"], 2)
+		self.assertTrue(
+			any(item.get("action") == "approve_suggestion" for item in audit_payload["items"])
+		)
 
 	def test_customer_memory_apis_return_compiled_memory(self):
 		generate_suggestions(
