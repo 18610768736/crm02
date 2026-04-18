@@ -7,12 +7,20 @@ from frappe.integrations.frappe_providers.frappecloud_billing import is_fc_site
 from frappe.translate import get_messages_for_boot, get_translated_doctypes
 from frappe.utils import cint, get_system_timezone
 from frappe.utils.telemetry import capture
+from urllib.parse import quote
 
 no_cache = 1
 
 
 def get_context():
 	from crm.api import check_app_permission
+
+	if frappe.session.user == "Guest":
+		app_path = frappe.form_dict.get("app_path")
+		target_path = f"/crm/{app_path}" if app_path else "/crm"
+		redirect_to = quote(target_path, safe="/")
+		frappe.local.flags.redirect_location = f"/login?redirect-to={redirect_to}"
+		raise frappe.Redirect
 
 	if not check_app_permission():
 		frappe.throw(_("You do not have permission to access Frappe CRM"), frappe.PermissionError)
