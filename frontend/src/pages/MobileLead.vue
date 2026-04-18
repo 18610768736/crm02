@@ -71,6 +71,11 @@
             v-model="doc"
             @updateField="updateField"
           />
+          <AISidePanel
+            :referenceDoctype="'CRM Lead'"
+            :referenceName="leadId"
+            contextType="lead_panel"
+          />
           <div
             v-if="sections.data"
             class="flex flex-1 flex-col justify-between overflow-hidden"
@@ -124,6 +129,7 @@
 </template>
 <script setup>
 import DeleteLinkedDocModal from '@/components/DeleteLinkedDocModal.vue'
+import AISidePanel from '@/components/AI/AISidePanel.vue'
 import ErrorPage from '@/components/ErrorPage.vue'
 import Icon from '@/components/Icon.vue'
 import DetailsIcon from '@/components/Icons/DetailsIcon.vue'
